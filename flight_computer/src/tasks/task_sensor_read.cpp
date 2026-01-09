@@ -37,6 +37,8 @@ void SensorRead::ReadImuFifo(uint32_t base_tick_count) noexcept {
   uint32_t gyro_sample_idx = 0;
 
   // Read all available FIFO samples
+  // FIFO is read oldest-first, so first sample read has timestamp: base - (N-1)*period
+  // Last sample read (newest) has timestamp: base - 0*period = base
   while (sample_count > 0) {
     sensor::FifoSample sample{};
     if (!m_imu->ReadFifoSample(sample)) {
@@ -50,9 +52,9 @@ void SensorRead::ReadImuFifo(uint32_t base_tick_count) noexcept {
       m_imu_data[0].acc.y = sample.y;
       m_imu_data[0].acc.z = sample.z;
 
-      // Derive timestamp: base + sample_index * 9615µs (converted to ms ticks)
-      // Note: RTOS tick is 1ms, so we calculate ms offset
-      uint32_t derived_tick = base_tick_count - (sample_count * sensor::Lsm6dso32::kSamplePeriodUs / 1000U);
+      // Derive timestamp: oldest sample is (sample_count-1) periods before base_tick
+      // Note: RTOS tick is 1ms, kSamplePeriodUs is 9615µs
+      uint32_t derived_tick = base_tick_count - ((sample_count - 1) * sensor::Lsm6dso32::kSamplePeriodUs / 1000U);
 
       // Record with derived timestamp
       record(derived_tick, add_id_to_record_type(IMU, 0), &(m_imu_data[0]));

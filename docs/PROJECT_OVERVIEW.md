@@ -48,8 +48,12 @@ cats-embedded/
 ## Hardware Documentation
 - **Product Pages**: https://www.catsystems.io/vega, https://www.catsystems.io/ground-station-1
 - **Hardware Repo**: https://github.com/catsystems/cats-hardware (Altium source files)
-- **Schematics (PDF)**: https://github.com/catsystems/cats-hardware/raw/main/CATS-Vega/CATS-Vega.pdf
-- **3D CAD**: Available in hardware repo `/3D` directories
+- **Schematics (PDF)**:
+  - Vega: https://github.com/catsystems/cats-hardware/raw/main/CATS-Vega/CATS-Vega.pdf
+  - Ground Station: https://github.com/catsystems/cats-hardware/raw/main/CATS-GS/CATS-GS.pdf
+- **3D CAD (STEP)**:
+  - Vega: https://github.com/catsystems/cats-hardware/tree/main/CATS-Vega/3D
+  - Ground Station: https://github.com/catsystems/cats-hardware/tree/main/CATS-GS/3D
 - **See**: [HARDWARE.md](HARDWARE.md) for detailed specs
 
 ## License

@@ -2,9 +2,12 @@
 
 ## Hardware Repository
 - **GitHub**: https://github.com/catsystems/cats-hardware
-- **Schematics (PDF)**: https://github.com/catsystems/cats-hardware/raw/main/CATS-Vega/CATS-Vega.pdf
-- **Ground Station Schematics**: https://github.com/catsystems/cats-hardware/raw/main/CATS-GS/CATS-GS.pdf
-- **3D CAD files available** in `/3D` subdirectories
+- **Schematics (PDF)**:
+  - Vega: https://github.com/catsystems/cats-hardware/raw/main/CATS-Vega/CATS-Vega.pdf
+  - Ground Station: https://github.com/catsystems/cats-hardware/raw/main/CATS-GS/CATS-GS.pdf
+- **3D CAD (STEP)**:
+  - Vega: https://github.com/catsystems/cats-hardware/tree/main/CATS-Vega/3D
+  - Ground Station: https://github.com/catsystems/cats-hardware/tree/main/CATS-GS/3D
 
 ## CATS Vega Flight Computer
 
@@ -79,6 +82,17 @@ The hardware design is modular with separate schematic sheets:
 | Magnetometer | QMC5883L (compass) |
 | GNSS | ATGM336H-5N |
 
+### Schematic Modules (Altium)
+- **Overview** - Top-level block diagram
+- **MCU** - ESP32-S2 microcontroller
+- **PM** - Power management, battery charging
+- **USB** - USB-C interface
+- **GNSS** - ATGM336H-5N GPS module
+- **Sensors** - LSM6DSRTR IMU, QMC5883L magnetometer
+- **Radio** - Dual SX1280 transceivers
+- **Radio_MCU** - STM32G0 telemetry processor
+- **Telemetry** - Telemetry interface
+
 ### Features
 - Track 2 independent Vega boards OR dual-antenna tracking of 1 Vega
 - Transflective display readable in sunlight
@@ -90,5 +104,5 @@ The hardware design is modular with separate schematic sheets:
 
 ## Telemetry Module (separate PCB)
 - MCU: STM32G071RB
-- Handles radio communication for Vega
+- Handles radio communication for both Vega and Ground Station
 - Connected via internal UART

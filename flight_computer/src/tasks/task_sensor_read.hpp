@@ -24,6 +24,12 @@ class SensorRead final : public Task<SensorRead, 512> {
  private:
   [[noreturn]] void Run() noexcept override;
 
+  /** Read all available samples from IMU FIFO and record them
+   *
+   * @param base_tick_count Current RTOS tick for timestamp derivation
+   */
+  void ReadImuFifo(uint32_t base_tick_count) noexcept;
+
   enum class BaroReadoutType {
     kReadBaroTemperature = 1,
     kReadBaroPressure = 2,
@@ -35,6 +41,11 @@ class SensorRead final : public Task<SensorRead, 512> {
   imu_data_t m_imu_data[NUM_IMU]{};
   baro_data_t m_baro_data[NUM_BARO]{};
   BaroReadoutType m_current_readout{BaroReadoutType::kReadBaroTemperature};
+
+  /// FIFO enabled flag
+  bool m_fifo_enabled{false};
+  /// Sample counter for timestamp derivation within a batch read
+  uint32_t m_fifo_sample_counter{0};
 };
 
 }  // namespace task

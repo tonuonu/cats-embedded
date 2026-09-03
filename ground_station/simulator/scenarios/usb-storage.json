@@ -1,0 +1,39 @@
+{
+  "initial": {
+    "ready": true,
+    "deviceStatus": {"usb": true, "usbStorageState": "firmware"}
+  },
+  "steps": [
+    {"assert":{"activeScreen":"menu","usbStorageState":"host","recorderState":"idle"}},
+    {"press":"right"},{"press":"right"},{"press":"down"},{"press":"ok"},
+    {"press":"down"},{"press":"down"},{"press":"down"},{"press":"ok"},
+    {"assert":{"activeScreen":"usb_storage","usbStorageState":"host","recorderState":"idle"}},
+    {"snapshot":"usb-storage-controls"},
+    {"press":"back"},
+    {"assert":{"activeScreen":"settings","settingsPage":0,"settingsSelection":2,"usbStorageState":"host"}},
+    {"press":"ok"},
+    {"assert":{"activeScreen":"usb_storage","usbStorageState":"host"}},
+    {"press":"back"},
+    {"assert":{"activeScreen":"settings","settingsPage":0,"settingsSelection":2,"usbStorageState":"host"}},
+    {"press":"ok"},
+    {"press":"ok"},{"advance":0},
+    {"assert":{"activeScreen":"settings","settingsPage":0,"settingsSelection":2,"usbStorageState":"firmware"}},
+    {"press":"ok"},
+    {"assert":{"activeScreen":"usb_storage","usbStorageState":"host"}},
+    {"press":"ok"},{"advance":0},
+    {"assert":{"activeScreen":"settings","settingsPage":0,"settingsSelection":2,"usbStorageState":"firmware"}},
+    {"set":{"link1.telemetry.state":2,"link1.telemetry.timestampDs":11}},
+    {"advance":0},
+    {"set":{"link1.telemetry.state":3,"link1.telemetry.timestampDs":12}},
+    {"advance":0},
+    {"assert":{"recorderState":"recording","recordedRowCount":1,"usbStorageState":"firmware"}},
+    {"press":"ok"},
+    {"assert":{"activeScreen":"usb_storage","usbStorageState":"firmware","usbStorageMessage":"Finalize the active log first."}},
+    {"press":"back"},
+    {"assert":{"activeScreen":"settings","settingsPage":0,"settingsSelection":2}},
+    {"set":{"link1.telemetry.state":7,"link1.telemetry.timestampDs":20}},
+    {"advance":0},
+    {"assert":{"recorderState":"idle","recordedRowCount":2,"usbStorageState":"host"}},
+    {"snapshot":"usb-storage-handoff"}
+  ]
+}

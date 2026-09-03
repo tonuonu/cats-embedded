@@ -129,8 +129,8 @@ boolean Adafruit_SharpMem::begin(void) {
 }
 
 // 1<<n is a costly operation on AVR -- table usu. smaller & faster
-static const uint8_t set[] = {1, 2, 4, 8, 16, 32, 64, 128},
-                     clr[] = {(uint8_t)~1,  (uint8_t)~2,  (uint8_t)~4,
+static const uint8_t PROGMEM set[] = {1, 2, 4, 8, 16, 32, 64, 128},
+                             clr[] = {(uint8_t)~1,  (uint8_t)~2,  (uint8_t)~4,
                                       (uint8_t)~8,  (uint8_t)~16, (uint8_t)~32,
                                       (uint8_t)~64, (uint8_t)~128};
 
@@ -148,64 +148,28 @@ static const uint8_t set[] = {1, 2, 4, 8, 16, 32, 64, 128},
 */
 /**************************************************************************/
 void Adafruit_SharpMem::drawPixel(int16_t x, int16_t y, uint16_t color) {
-  if ((x < 0) || (x >= _width) || (y < 0) || (y >= HEIGHT))
+  if ((x < 0) || (x >= _width) || (y < 0) || (y >= _height))
     return;
 
+  switch (rotation) {
+  case 1:
+    _swap_int16_t(x, y);
+    x = WIDTH - 1 - x;
+    break;
+  case 2:
+    x = WIDTH - 1 - x;
+    y = HEIGHT - 1 - y;
+    break;
+  case 3:
+    _swap_int16_t(x, y);
+    y = HEIGHT - 1 - y;
+    break;
+  }
+
   if (color) {
-    sharpmem_buffer[(y * WIDTH + x) / 8] |= set[x % 8];
+    sharpmem_buffer[(y * WIDTH + x) / 8] |= pgm_read_byte(&set[x & 7]);
   } else {
-    sharpmem_buffer[(y * WIDTH + x) / 8] &= clr[x % 8];
-  }
-}
-
-void Adafruit_SharpMem::drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) {
-  if ((x < 0) || (x >= _width) || (y < 0) || (y >= HEIGHT))
-    return;
-
-  int end = x+w;
-  if((end) >= WIDTH) end = WIDTH-1;
-  
-
-  if (color) {
-    for(int i = x; i < end; i++){
-        if(i % 8 == 0 && (i - end) >= 8) {
-          sharpmem_buffer[(y * WIDTH + i) / 8] = 0xFF;
-          i += 7;
-        }
-        else {
-          sharpmem_buffer[(y * WIDTH + i) / 8] |= set[i % 8];
-        }
-    }
-  }
-  else {
-    for(int i = x; i < end; i++){
-      if(i % 8 == 0 && (i - end) >= 8) {
-          sharpmem_buffer[(y * WIDTH + i) / 8] = 0x00;
-          i += 7;
-        }
-        else {
-          sharpmem_buffer[(y * WIDTH + i) / 8] &= clr[i % 8];
-        }
-    }
-  }
-}
-
-void Adafruit_SharpMem::drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color){
-  if ((x < 0) || (x >= _width) || (y < 0) || ((y) >= HEIGHT))
-    return;
-  if(y+h >= HEIGHT) h = HEIGHT-y-1;
-
-  if (color) {
-    uint8_t mask = set[x % 8];
-    for(int i = y; i < y+h; i++){
-        sharpmem_buffer[(i * WIDTH + x) / 8] |= mask;
-    }
-  }
-  else {
-    uint8_t mask = clr[x % 8];
-    for(int i = y; i < y+h; i++){
-      sharpmem_buffer[(i * WIDTH + x) / 8] &= mask;
-    }
+    sharpmem_buffer[(y * WIDTH + x) / 8] &= pgm_read_byte(&clr[x & 7]);
   }
 }
 
@@ -246,6 +210,65 @@ uint8_t Adafruit_SharpMem::getPixel(uint16_t x, uint16_t y) {
 
 /**************************************************************************/
 /*!
+    @brief Fills a rectangle in the backing buffer without drawing each pixel
+
+    @param[in] x The left edge
+    @param[in] y The top edge
+    @param[in] w The width
+    @param[in] h The height
+    @param color The color to set
+*/
+/**************************************************************************/
+void Adafruit_SharpMem::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
+                                 uint16_t color) {
+  if (rotation != 0) {
+    Adafruit_GFX::fillRect(x, y, w, h, color);
+    return;
+  }
+
+  if (w <= 0 || h <= 0 || x >= WIDTH || y >= HEIGHT || x + w <= 0 ||
+      y + h <= 0) {
+    return;
+  }
+
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (x + w > WIDTH) {
+    w = WIDTH - x;
+  }
+  if (y + h > HEIGHT) {
+    h = HEIGHT - y;
+  }
+
+  const int16_t end_x = x + w;
+  const uint8_t fill = color ? 0xff : 0x00;
+  for (int16_t row = y; row < y + h; ++row) {
+    int16_t column = x;
+    while (column < end_x && (column & 7) != 0) {
+      drawPixel(column++, row, color);
+    }
+
+    const int16_t whole_bytes = (end_x - column) / 8;
+    if (whole_bytes > 0) {
+      memset(sharpmem_buffer + (row * WIDTH + column) / 8, fill,
+             whole_bytes);
+      column += whole_bytes * 8;
+    }
+
+    while (column < end_x) {
+      drawPixel(column++, row, color);
+    }
+  }
+}
+
+/**************************************************************************/
+/*!
     @brief Clears the screen
 */
 /**************************************************************************/
@@ -256,7 +279,8 @@ void Adafruit_SharpMem::clearDisplay() {
   // Send the clear screen command rather than doing a HW refresh (quicker)
   digitalWrite(_cs, HIGH);
 
-  uint8_t clear_data[2] = {_sharpmem_vcom | SHARPMEM_BIT_CLEAR, 0x00};
+  uint8_t clear_data[2] = {(uint8_t)(_sharpmem_vcom | SHARPMEM_BIT_CLEAR),
+                           0x00};
   spidev->transfer(clear_data, 2);
 
   TOGGLE_VCOM;

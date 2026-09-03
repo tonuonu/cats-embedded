@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "packetSink.hpp"
 #include "telemetryData.hpp"
 #include "telemetry_reg.hpp"
 
@@ -34,6 +35,11 @@ class Parser {
     time = t;
   }
 
+  void setPacketSink(ITelemetryPacketSink* packetSink, uint8_t packetSource) {
+    sink = packetSink;
+    source = packetSource;
+  }
+
   void reset() {
     dataIndex = 0;
     opCodeIndex = -1;
@@ -54,6 +60,8 @@ class Parser {
   TelemetryInfo* info{nullptr};
   TelemetryLocation* location{nullptr};
   TelemetryTime* time{nullptr};
+  ITelemetryPacketSink* sink{nullptr};
+  uint8_t source{0};
 
   uint8_t buffer[MAX_CMD_BUFFER]{};
   uint32_t dataIndex = 0;

@@ -6,10 +6,12 @@
 
 #include <TimeLib.h>
 #include <algorithm>
+#include <cstring>
 
 #include <freertos/task.h>
 
 #include "console.hpp"
+#include "hmi/location_qr.hpp"
 #include "logging/flightStatistics.hpp"
 #include "navigation.hpp"
 #include "telemetry/telemetry.hpp"
@@ -33,7 +35,10 @@ void Hmi::begin() {
   backButton.begin();
 
   recorder.begin();
+  recorder.configure(systemConfig.config.receiverMode, systemConfig.config.neverStopLogging);
   recorder.enable();
+  link1.setPacketSink(&recorder, 1);
+  link2.setPacketSink(&recorder, 2);
 
   window.begin();
   initialized = true;
@@ -41,6 +46,11 @@ void Hmi::begin() {
 }
 
 void Hmi::fsm() {
+  recorder.configure(systemConfig.config.receiverMode, systemConfig.config.neverStopLogging);
+  const RecorderStatus recorderStatus = recorder.getStatus();
+  isLogging = recorderStatus.state == RecorderState::Recording;
+  updateAutomaticUsbStorage(recorderStatus);
+  updateRecoveryLocations();
   switch (state) {
     case MENU:
       menu();
@@ -68,6 +78,10 @@ void Hmi::fsm() {
 
     case SETTINGS:
       settings();
+      break;
+
+    case USB_STORAGE:
+      usbStorage();
       break;
 
     default:
@@ -127,11 +141,6 @@ void Hmi::live() {
   bool updated = false;
 
   if (link1.data.isUpdated() && link1.info.isUpdated()) {
-    // We log after LIFTOFF and stop either never (if neverStopLogging == TRUE) or at TOUCHDOWN
-    link1Log = (link1.data.state() > 2) && (systemConfig.config.neverStopLogging || link1.data.state() < 7);
-    if (link1Log) {
-      recorder.record(&link1.data.getRxData(), 1);
-    }
     window.updateLive(&link1.data, &navigation, &link1.info, 0);
     updated = true;
   } else if (link1.info.isUpdated()) {
@@ -140,11 +149,6 @@ void Hmi::live() {
   }
 
   if (link2.data.isUpdated() && link2.info.isUpdated()) {
-    // We log after LIFTOFF and stop either never (if neverStopLogging == TRUE) or at TOUCHDOWN
-    link2Log = (link2.data.state() > 2) && (systemConfig.config.neverStopLogging || link2.data.state() < 7);
-    if (link2Log) {
-      recorder.record(&link2.data.getRxData(), 2);
-    }
     window.updateLive(&link2.data, &navigation, &link2.info, 1);
     updated = true;
   } else if (link2.info.isUpdated()) {
@@ -152,7 +156,7 @@ void Hmi::live() {
     updated = true;
   }
 
-  isLogging = link1Log || link2Log;
+  isLogging = recorder.getStatus().state == RecorderState::Recording;
 
   if (updated) {
     window.refresh();
@@ -168,29 +172,134 @@ void Hmi::live() {
 
   if (backButton.wasPressed()) {
     state = MENU;
-    isLogging = false;
     window.initMenu(menuIndex);
   }
 }
 
 /* RECOVERY */
 
-void Hmi::initRecovery() { window.initRecovery(); }
+void Hmi::initRecovery() {
+  recoveryQrLink = -1;
+  const bool hasLastLocation = recoveryLocationValid[0] || recoveryLocationValid[1];
+  window.initRecovery(hasLastLocation);
+  if (systemConfig.config.receiverMode == DUAL) {
+    selectedRecoveryLink = static_cast<int8_t>(recoveryLocationValid[0] ? 0 : (recoveryLocationValid[1] ? 1 : 0));
+    window.updateRecoveryTarget(&navigation, recoveryLocations[selectedRecoveryLink],
+                                recoveryLocationValid[selectedRecoveryLink], selectedRecoveryLink, true,
+                                hasLastLocation);
+  } else {
+    window.updateRecovery(&navigation, hasLastLocation);
+  }
+}
+
+void Hmi::updateRecoveryLocations() {
+  const packedRXMessage *const messages[2] = {&link1.data.getRxData(), &link2.data.getRxData()};
+  for (uint8_t index = 0; index < 2; ++index) {
+    const float latitude = static_cast<float>(messages[index]->lat) / 10000.0F;
+    const float longitude = static_cast<float>(messages[index]->lon) / 10000.0F;
+    if (LocationQr::IsValid(latitude, longitude)) {
+      recoveryLocations[index] = EarthPoint3D(latitude, longitude);
+      recoveryLocationValid[index] = true;
+    }
+  }
+}
+
+bool Hmi::showRecoveryLocation(int8_t linkIndex) {
+  if (linkIndex < 0 || linkIndex > 1 || !recoveryLocationValid[linkIndex]) {
+    return false;
+  }
+  const EarthPoint3D &location = recoveryLocations[linkIndex];
+  const char *title = linkIndex == 0 ? "[Link 1] Last Location" : "[Link 2] Last Location";
+  const bool hasNextPage = recoveryLocationValid[1 - linkIndex];
+  if (!window.showLocationQr(location.lat, location.lon, title, true, hasNextPage)) {
+    return false;
+  }
+  recoveryQrLink = linkIndex;
+  recoveryQrPoint = location;
+  return true;
+}
 
 void Hmi::recovery() {
-  EarthPoint3D a;
-  EarthPoint3D b;
-
-  a = navigation.getPointA();
-  b = navigation.getPointB();
-
-  if (navigation.isUpdated()) {
-    window.updateRecovery(&navigation);
-  }
+  const bool dualMode = systemConfig.config.receiverMode == DUAL;
 
   if (backButton.wasPressed()) {
+    recoveryQrLink = -1;
     state = MENU;
     window.initMenu(menuIndex);
+    return;
+  }
+
+  if (recoveryQrLink < 0 && dualMode && (upButton.wasPressed() || downButton.wasPressed())) {
+    selectedRecoveryLink = static_cast<int8_t>(1 - selectedRecoveryLink);
+    const bool hasLastLocation = recoveryLocationValid[0] || recoveryLocationValid[1];
+    window.updateRecoveryTarget(&navigation, recoveryLocations[selectedRecoveryLink],
+                                recoveryLocationValid[selectedRecoveryLink], selectedRecoveryLink, true,
+                                hasLastLocation);
+    return;
+  }
+
+  if (rightButton.wasPressed()) {
+    if (recoveryQrLink < 0) {
+      if (dualMode) {
+        (void)showRecoveryLocation(selectedRecoveryLink);
+      } else {
+        const EarthPoint3D target = navigation.getPointB();
+        if (LocationQr::IsValid(target.lat, target.lon) &&
+            window.showLocationQr(target.lat, target.lon, "Last Location", true, false)) {
+          recoveryQrLink = 0;
+          recoveryQrPoint = target;
+        }
+      }
+    } else if (dualMode && recoveryLocationValid[1 - recoveryQrLink]) {
+      selectedRecoveryLink = static_cast<int8_t>(1 - recoveryQrLink);
+      (void)showRecoveryLocation(selectedRecoveryLink);
+    }
+    return;
+  }
+
+  if (leftButton.wasPressed() && recoveryQrLink >= 0) {
+    recoveryQrLink = -1;
+    const bool hasLastLocation = recoveryLocationValid[0] || recoveryLocationValid[1];
+    window.initRecovery(hasLastLocation);
+    if (dualMode) {
+      window.updateRecoveryTarget(&navigation, recoveryLocations[selectedRecoveryLink],
+                                  recoveryLocationValid[selectedRecoveryLink], selectedRecoveryLink, true,
+                                  hasLastLocation);
+    } else {
+      window.updateRecovery(&navigation, hasLastLocation);
+    }
+    return;
+  }
+
+  // A display transfer blocks button polling. Let the existing debounce logic
+  // sample a held Link-selection button again before starting another transfer.
+  if (dualMode && recoveryQrLink < 0 && (digitalRead(kUpButtonPin) == LOW || digitalRead(kDownButtonPin) == LOW)) {
+    return;
+  }
+
+  if (recoveryQrLink >= 0) {
+    if (dualMode) {
+      const EarthPoint3D &location = recoveryLocations[recoveryQrLink];
+      if (location.lat != recoveryQrPoint.lat || location.lon != recoveryQrPoint.lon) {
+        (void)showRecoveryLocation(recoveryQrLink);
+      }
+    } else {
+      const EarthPoint3D location = navigation.getPointB();
+      if ((location.lat != recoveryQrPoint.lat || location.lon != recoveryQrPoint.lon) &&
+          LocationQr::IsValid(location.lat, location.lon) &&
+          window.showLocationQr(location.lat, location.lon, "Last Location", true, false)) {
+        recoveryQrPoint = location;
+      }
+    }
+  } else if (navigation.isUpdated()) {
+    const bool hasLastLocation = recoveryLocationValid[0] || recoveryLocationValid[1];
+    if (dualMode) {
+      window.updateRecoveryTarget(&navigation, recoveryLocations[selectedRecoveryLink],
+                                  recoveryLocationValid[selectedRecoveryLink], selectedRecoveryLink, true,
+                                  hasLastLocation);
+    } else {
+      window.updateRecovery(&navigation, hasLastLocation);
+    }
   }
 }
 
@@ -329,99 +438,248 @@ void Hmi::testing() {
 /* DATA */
 
 void Hmi::initData() {
-  dataFileCount = recorder.getFileCount();
-
-  // The display can show a maximum of 11 entries, no scrolling implemented!
-  // It is highly unlikely to get more than 11 flight logs because the flash is quite small
-  dataFileCount = std::min<decltype(dataFileCount)>(dataFileCount, 11);
-
-  if (dataFileCount > 0) {
-    window.initData(true);
-    char fileName[30] = {};
-    for (uint8_t i = 0; i < dataFileCount; i++) {
-      recorder.getFileNameByIndex(i, fileName);
-      if (i == dataIndex) {
-        window.dataHighlight(fileName, i, true);
-      } else {
-        window.listFileName(fileName, i);
-      }
-    }
-  } else {
-    window.initData(false);
+  dataQrLink = -1;
+  dataView = DataView::List;
+  if (!claimStorageForFirmware()) {
+    dataCatalog.clear();
+    dataMessageReturn = DataView::List;
+    dataView = DataView::Message;
+    window.initDataMessage("Log Error", "Unable to reclaim USB storage");
+    return;
   }
+  if (!recorder.refreshCatalog(dataCatalog)) {
+    dataCatalog.clear();
+    dataMessageReturn = DataView::List;
+    dataView = DataView::Message;
+    window.initDataMessage("Log Error", "Unable to read log catalog");
+    return;
+  }
+  if (dataCatalog.empty()) {
+    dataIndex = 0;
+    dataWindowStart = 0;
+  } else {
+    dataIndex = std::min(dataIndex, dataCatalog.size() - 1U);
+    dataWindowStart = std::min(dataWindowStart, dataIndex);
+    if (dataIndex >= dataWindowStart + 11U) {
+      dataWindowStart = dataIndex - 10U;
+    }
+  }
+  drawDataList();
+}
+
+void Hmi::drawDataList() {
+  window.initData(!dataCatalog.empty());
+  const auto end = std::min(dataCatalog.size(), dataWindowStart + 11U);
+  for (size_t index = dataWindowStart; index < end; ++index) {
+    const auto row = static_cast<uint16_t>(index - dataWindowStart);
+    char label[kLogFilenameSize + 12U]{};
+    snprintf(label, sizeof(label), "%s%s", dataCatalog[index].name, dataCatalog[index].active ? "  [ACTIVE]" : "");
+    if (index == dataIndex) {
+      window.dataHighlight(label, row, true);
+    } else {
+      window.listFileName(label, row);
+    }
+  }
+  window.dataScrollIndicators(dataWindowStart > 0U, end < dataCatalog.size(),
+                              dataCatalog.empty() ? -1 : static_cast<int16_t>(dataIndex - dataWindowStart));
   window.refresh();
 }
 
+void Hmi::openSelectedLog() {
+  if (dataIndex >= dataCatalog.size()) {
+    return;
+  }
+  const LogEntry &entry = dataCatalog[dataIndex];
+  strncpy(dataLogName, entry.name, sizeof(dataLogName) - 1U);
+  dataLogName[sizeof(dataLogName) - 1U] = '\0';
+  if (entry.active && !recorder.sync()) {
+    dataMessageReturn = DataView::List;
+    dataView = DataView::Message;
+    window.initDataMessage("Log Error", "Unable to sync active log");
+    return;
+  }
+  if (!dataAnalysis.parse(recorder.getDirectory(), entry.name)) {
+    dataMessageReturn = DataView::List;
+    dataView = DataView::Message;
+    window.initDataMessage("Log Error", "Unable to read log");
+    return;
+  }
+  dataStatistics[0] = dataAnalysis.summaries[0];
+  dataStatistics[1] = dataAnalysis.summaries[1];
+  dataView = DataView::Details;
+  showDataStatistics();
+}
+
+bool Hmi::showDataLocation(int8_t linkIndex) {
+  if (linkIndex < 0 || linkIndex > 1 || !dataStatistics[linkIndex].hasLastLocation()) {
+    return false;
+  }
+  FlightStatistics &stats = dataStatistics[linkIndex];
+  const char *title = linkIndex == 0 ? "[Link 1] Last Location" : "[Link 2] Last Location";
+  const auto hasNextPage = linkIndex == 0 && dataStatistics[1].hasLastLocation();
+  if (!window.showLocationQr(stats.getLastLatitude(), stats.getLastLongitude(), title, true, hasNextPage)) {
+    return false;
+  }
+  dataQrLink = linkIndex;
+  return true;
+}
+
+void Hmi::showDataStatistics() {
+  dataQrLink = -1;
+  window.dataShowFlightStatistics(dataStatistics[0], dataStatistics[1], dataLogName,
+                                  dataStatistics[0].hasLastLocation() || dataStatistics[1].hasLastLocation());
+}
+
+// The branches directly mirror the small, explicit Data screen state machine.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void Hmi::data() {
-  if (dataFlightStatistic) {
+  if (dataView == DataView::Details) {
+    if (backButton.wasPressed() || (upButton.wasPressed() && dataQrLink < 0)) {
+      initData();
+      return;
+    }
+    if (downButton.wasPressed() && dataQrLink < 0 && dataIndex < dataCatalog.size()) {
+      dataView = DataView::Options;
+      window.initDataOptions(dataCatalog[dataIndex].name, dataCatalog[dataIndex].active);
+      return;
+    }
+    if (rightButton.wasPressed()) {
+      if (dataQrLink < 0) {
+        if (!showDataLocation(0)) {
+          (void)showDataLocation(1);
+        }
+      } else if (dataQrLink == 0 && dataStatistics[1].hasLastLocation()) {
+        (void)showDataLocation(1);
+      }
+    }
+
+    if (leftButton.wasPressed() && dataQrLink >= 0) {
+      if (dataQrLink == 1 && dataStatistics[0].hasLastLocation()) {
+        (void)showDataLocation(0);
+      } else {
+        showDataStatistics();
+      }
+    }
+    return;
+  }
+
+  if (dataView == DataView::Options) {
+    if (backButton.wasPressed() || upButton.wasPressed()) {
+      dataView = DataView::Details;
+      showDataStatistics();
+    } else if (okButton.wasPressed() && dataIndex < dataCatalog.size()) {
+      dataView = dataCatalog[dataIndex].active ? DataView::ConfirmFinalize : DataView::ConfirmDelete;
+      window.initBox(dataCatalog[dataIndex].active ? "Finalize this log?" : "Delete this log?");
+    }
+    return;
+  }
+
+  if (dataView == DataView::ConfirmFinalize || dataView == DataView::ConfirmDelete) {
     if (backButton.wasPressed()) {
-      dataFlightStatistic = false;
+      dataView = DataView::Options;
+      window.initDataOptions(dataCatalog[dataIndex].name, dataCatalog[dataIndex].active);
+      return;
+    }
+    if (okButton.wasPressed()) {
+      const bool deleting = dataView == DataView::ConfirmDelete;
+      if (deleting && !Utils::isFilesystemAvailable()) {
+        dataMessageReturn = DataView::Options;
+        dataView = DataView::Message;
+        window.initDataMessage("USB Connected", "Disconnect USB before deleting.");
+        return;
+      }
+      const auto success =
+          deleting ? recorder.deleteLog(dataCatalog[dataIndex].name) : recorder.finalize(FinalizeReason::UserRequested);
+      if (!success) {
+        dataMessageReturn = DataView::Options;
+        dataView = DataView::Message;
+        if (deleting && !Utils::isFilesystemAvailable()) {
+          window.initDataMessage("USB Connected", "Disconnect USB before deleting.");
+        } else {
+          window.initDataMessage(deleting ? "Delete Failed" : "Finalize Failed",
+                                 deleting ? "Log was not deleted" : "Log is still active");
+        }
+        return;
+      }
       initData();
     }
-  } else {
+    return;
+  }
+
+  if (dataView == DataView::Message) {
+    if (backButton.wasPressed()) {
+      if (dataMessageReturn == DataView::List) {
+        initData();
+      } else {
+        dataView = DataView::Options;
+        window.initDataOptions(dataCatalog[dataIndex].name, dataCatalog[dataIndex].active);
+      }
+    }
+    return;
+  }
+
+  if (dataView == DataView::List) {
     if (backButton.wasPressed()) {
       state = MENU;
       window.initMenu(menuIndex);
       dataIndex = 0;
+      dataWindowStart = 0;
+      automaticUsbSharePending = Utils::isConnected();
+      return;
     }
-    if (downButton.wasPressed() && dataIndex < (dataFileCount - 1)) {
+    if ((downButton.wasPressed() || downButton.pressedFor(500)) && !dataCatalog.empty() &&
+        dataIndex + 1U < dataCatalog.size()) {
       dataIndex++;
-      char fileName[30] = {};
-      if (dataIndex >= 1) {
-        recorder.getFileNameByIndex(dataIndex - 1, fileName);
-        window.dataHighlight(fileName, dataIndex - 1, false);
+      if (dataIndex >= dataWindowStart + 11U) {
+        dataWindowStart = dataIndex - 10U;
       }
-      recorder.getFileNameByIndex(dataIndex, fileName);
-      window.dataHighlight(fileName, dataIndex, true);
-      window.refresh();
+      drawDataList();
     }
-    if (upButton.wasPressed() && dataIndex > 0) {
+    if ((upButton.wasPressed() || upButton.pressedFor(500)) && dataIndex > 0) {
       dataIndex--;
-      char fileName[30] = {};
-      if (dataIndex < (dataFileCount - 1)) {
-        recorder.getFileNameByIndex(dataIndex + 1, fileName);
-        window.dataHighlight(fileName, dataIndex + 1, false);
+      if (dataIndex < dataWindowStart) {
+        dataWindowStart = dataIndex;
       }
-      recorder.getFileNameByIndex(dataIndex, fileName);
-      window.dataHighlight(fileName, dataIndex, true);
-      window.refresh();
+      drawDataList();
     }
 
-    if (okButton.wasPressed() && (dataFileCount > 0)) {
-      FlightStatistics stats1;
-      FlightStatistics stats2;
-      char fileName[30] = {};
-      // NOLINTNEXTLINE(cppcoreguidelines-init-variables) not sure why...
-      const char *directory = recorder.getDirectory();
-      recorder.getFileNameByIndex(dataIndex, fileName);
-      stats1.parseFlightLog(directory, fileName, 1U);
-      stats2.parseFlightLog(directory, fileName, 2U);
-      dataFlightStatistic = true;
-      window.dataShowFlightStatistics(stats1, stats2);
+    if (okButton.wasPressed() && !dataCatalog.empty()) {
+      openSelectedLog();
     }
   }
 }
 
 /* SENSORS */
 
-void Hmi::initSensors() { window.initSensors(); }
+void Hmi::initSensors() {
+  lastSensorRefresh = 0;
+  window.initSensors();
+}
 
 void Hmi::sensors() {
   switch (calibrationState) {
-    case IDLE:
-
-      window.updateSensors(&navigation);
-      delay(50);
+    case IDLE: {
+      if (backButton.wasPressed()) {
+        state = MENU;
+        window.initMenu(menuIndex);
+        return;
+      }
 
       if (okButton.wasPressed()) {
         window.initSensorPrepareCalibrate();
         calibrationState = PREPARE;
+        return;
       }
-      if (backButton.wasPressed()) {
-        state = MENU;
-        window.initMenu(menuIndex);
+
+      const uint32_t now = millis();
+      if (now - lastSensorRefresh >= kSensorRefreshIntervalMs) {
+        // A full framebuffer transfer blocks this task. Leave a
+        // quiet interval between sensor redraws so button polling stays fast.
+        window.updateSensors(&navigation);
+        lastSensorRefresh = millis();
       }
       break;
+    }
     case PREPARE:
       if (okButton.wasPressed()) {
         window.initSensorCalibrate();
@@ -449,7 +707,10 @@ void Hmi::sensors() {
     case CONCLUDED:
       if (okButton.wasPressed() || backButton.wasPressed()) {
         calibrationState = IDLE;
-        systemConfig.save();
+        if (claimStorageForFirmware()) {
+          systemConfig.save();
+          automaticUsbSharePending = Utils::isConnected();
+        }
         window.initSensors();
       }
       break;
@@ -578,13 +839,16 @@ void Hmi::settings() {
         }
         case BUTTON: {
           if (okButton.wasPressed()) {
-            // If the setting is pointing to the bootloader function, we need to display the bootloader screen
-            // first
-            if (cfg.fun_ptr == Utils::startBootloader) {
-              window.Bootloader();
-            }
-            if (cfg.fun_ptr != nullptr) {
-              cfg.fun_ptr();
+            switch (cfg.buttonAction) {
+              case BUTTON_ACTION_USB_STORAGE:
+                initUsbStorage();
+                return;
+              case BUTTON_ACTION_START_BOOTLOADER:
+                window.Bootloader();
+                Utils::startBootloader();
+                return;
+              case BUTTON_ACTION_NONE:
+                break;
             }
           }
           break;
@@ -620,19 +884,160 @@ void Hmi::settings() {
         }
 
         link1.setTestingPhrase(systemConfig.config.testingPhrase, kMaxPhraseLen);
-        systemConfig.save();
+        if (claimStorageForFirmware()) {
+          systemConfig.save();
+          automaticUsbSharePending = Utils::isConnected();
+        }
       }
       window.initMenu(menuIndex);
     }
   }
 }
 
+void Hmi::initUsbStorage() {
+  state = USB_STORAGE;
+  automaticUsbSharePending = false;
+  displayedUsbStorageState = Utils::getMassStorageState();
+
+  if (displayedUsbStorageState == UsbStorageState::HostOwned) {
+    usbStorageSession = true;
+    window.initUsbStorage(true);
+    return;
+  }
+  if (displayedUsbStorageState == UsbStorageState::Preparing) {
+    usbStorageSession = true;
+    window.initUsbStorage(false);
+    return;
+  }
+  if (displayedUsbStorageState == UsbStorageState::Reclaiming) {
+    usbStorageSession = true;
+    window.initDataMessage("USB Drive", "Closing USB drive...");
+    return;
+  }
+
+  usbStorageSession = false;
+
+  if (!Utils::isConnected()) {
+    window.initDataMessage("USB Drive", "Connect USB cable first.");
+    return;
+  }
+
+  const RecorderStatus recorderStatus = recorder.getStatus();
+  if (recorderStatus.state != RecorderState::Idle) {
+    window.initDataMessage("USB Drive", "Finalize the active log first.");
+    return;
+  }
+
+  if (!recorder.shareWithMassStorage()) {
+    window.initDataMessage("USB Drive", "USB storage is unavailable.");
+    return;
+  }
+
+  usbStorageSession = true;
+  displayedUsbStorageState = UsbStorageState::Preparing;
+  window.initUsbStorage(false);
+}
+
+void Hmi::usbStorage() {
+  if (!usbStorageSession) {
+    if (backButton.wasPressed()) {
+      state = SETTINGS;
+      window.initSettings(settingSubMenu);
+      window.updateSettings(settingIndex);
+    }
+    return;
+  }
+
+  const UsbStorageState storageState = Utils::getMassStorageState();
+  if (storageState != displayedUsbStorageState) {
+    displayedUsbStorageState = storageState;
+    if (storageState == UsbStorageState::HostOwned) {
+      window.initUsbStorage(true);
+    } else if (storageState == UsbStorageState::Reclaiming) {
+      window.initDataMessage("USB Drive", "Closing USB drive...");
+    } else if (storageState == UsbStorageState::FirmwareOwned) {
+      usbStorageSession = false;
+      state = SETTINGS;
+      window.initSettings(settingSubMenu);
+      window.updateSettings(settingIndex);
+      return;
+    } else if (storageState == UsbStorageState::Fault) {
+      usbStorageSession = false;
+      window.initDataMessage("USB Drive", "Storage could not be remounted.");
+      return;
+    }
+  }
+
+  if (storageState == UsbStorageState::HostOwned && backButton.wasPressed()) {
+    usbStorageSession = false;
+    state = SETTINGS;
+    window.initSettings(settingSubMenu);
+    window.updateSettings(settingIndex);
+    return;
+  }
+
+  if ((storageState == UsbStorageState::HostOwned && okButton.wasPressed()) ||
+      (storageState == UsbStorageState::Preparing && backButton.wasPressed())) {
+    Utils::requestFirmwareStorage();
+    displayedUsbStorageState = UsbStorageState::Reclaiming;
+    window.initDataMessage("USB Drive", "Closing USB drive...");
+  }
+}
+
+void Hmi::updateAutomaticUsbStorage(const RecorderStatus &recorderStatus) {
+  const bool connected = Utils::isConnected();
+  if (!connected) {
+    usbPreviouslyConnected = false;
+    automaticUsbSharePending = false;
+    previousRecorderState = recorderStatus.state;
+    return;
+  }
+
+  if (!usbPreviouslyConnected) {
+    usbPreviouslyConnected = true;
+    automaticUsbSharePending = recorderStatus.state == RecorderState::Idle;
+  }
+  if (previousRecorderState != RecorderState::Idle && recorderStatus.state == RecorderState::Idle) {
+    automaticUsbSharePending = true;
+  }
+  if (recorderStatus.state != RecorderState::Idle) {
+    automaticUsbSharePending = false;
+  }
+  previousRecorderState = recorderStatus.state;
+
+  if (!automaticUsbSharePending || state == DATA || Utils::getMassStorageState() != UsbStorageState::FirmwareOwned) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (now - lastAutomaticUsbShareAttempt < 500U) {
+    return;
+  }
+  lastAutomaticUsbShareAttempt = now;
+  if (recorder.shareWithMassStorage()) {
+    automaticUsbSharePending = false;
+  }
+}
+
+bool Hmi::claimStorageForFirmware() {
+  automaticUsbSharePending = false;
+  return Utils::claimFirmwareStorage();
+}
+
 void Hmi::update(void *pvParameter) {
   auto *ref = static_cast<Hmi *>(pvParameter);
 
-  ref->window.logo();
-
-  vTaskDelay(2000);
+  if (systemConfig.config.startupAnimation) {
+    const uint32_t introStartMs = millis();
+    TickType_t introLastTick = xTaskGetTickCount();
+    while (millis() - introStartMs < StartupIntro::kDurationMs) {
+      ref->window.drawStartupIntroFrame(millis() - introStartMs);
+      vTaskDelayUntil(&introLastTick, pdMS_TO_TICKS(StartupIntro::kFrameIntervalMs));
+    }
+  } else {
+    ref->window.logo();
+    vTaskDelay(pdMS_TO_TICKS(StartupIntro::kStaticLogoDurationMs));
+  }
 
   ref->window.initBar();
   ref->initMenu();
@@ -643,6 +1048,15 @@ void Hmi::update(void *pvParameter) {
   while (ref->initialized) {
     TickType_t task_last_tick = xTaskGetTickCount();
 
+    ref->upButton.read();
+    ref->downButton.read();
+    ref->leftButton.read();
+    ref->rightButton.read();
+    ref->centerButton.read();
+
+    ref->okButton.read();
+    ref->backButton.read();
+
     ref->fsm();
 
     if (link1.data.isUpdated()) {
@@ -652,7 +1066,7 @@ void Hmi::update(void *pvParameter) {
     if (millis() - barUpdate >= 1000) {
       barUpdate = millis();
       const float voltage = static_cast<float>(analogRead(18)) * 0.00062F;  // 0.00059154929F;
-      if (!ref->isLogging) {
+      if (!ref->isLogging && Utils::isFilesystemAvailable()) {
         ref->flashFreeMemory = Utils::getFlashMemoryUsage();
       }
       if (link2.time.isUpdated()) {
@@ -660,18 +1074,12 @@ void Hmi::update(void *pvParameter) {
         adjustTime(systemConfig.config.timeZoneOffset * 3600L);
         timeValid = true;
       }
-      ref->window.updateBar(voltage, static_cast<bool>(digitalRead(21)), ref->isLogging, link2.location.isValid(),
-                            timeValid, ref->flashFreeMemory);
+      const RecorderStatus recorderStatus = ref->recorder.getStatus();
+      ref->window.updateBar(voltage, static_cast<bool>(digitalRead(21)),
+                            recorderStatus.state == RecorderState::Recording, link2.location.isValid(), timeValid,
+                            ref->flashFreeMemory, recorderStatus.state == RecorderState::Fault);
     }
 
-    ref->upButton.read();
-    ref->downButton.read();
-    ref->leftButton.read();
-    ref->rightButton.read();
-    ref->centerButton.read();
-
-    ref->okButton.read();
-    ref->backButton.read();
     vTaskDelayUntil(&task_last_tick, static_cast<TickType_t>(1000) / 50);
   }
 }

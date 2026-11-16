@@ -51,10 +51,28 @@ static void ev_servo_check(const cli_value_t * /*var*/) {
   warn_claimed_servo_actions(canard_layout_claims(canard_boot_layout(), 0U) ? canard_boot_layout() : configured);
 }
 
-/* set ctrl_layout: reboot note, then the event servo actions the new layout would claim. */
+/* ROLL_2 mixes roll only: a STEP doublet on T1/T2 would move no canard (warn only, the setting is kept). */
+static void warn_step_axis_without_tilt() {
+  const canard_config_t &cfg = global_cats_config.canard;
+  if (cfg.layout == static_cast<uint8_t>(canard::Layout::kRoll2) &&
+      cfg.step_axis != static_cast<uint8_t>(canard::StepAxis::kRoll) && cfg.step_axis < ctrl_axis_map.size()) {
+    cli_print_linefeed();
+    cli_printf("warning: ctrl_step_axis %s with ctrl_layout ROLL_2 (roll only): STEP doublets move no canard",
+               ctrl_axis_map[cfg.step_axis]);
+  }
+}
+
+/* set ctrl_layout: reboot note, then the event servo actions the new layout would claim and the STEP axis. */
 static void ctrl_layout_cb(const cli_value_t *var) {
   ctrl_reboot_note(var);
   warn_claimed_servo_actions(global_cats_config.canard.layout);
+  warn_step_axis_without_tilt();
+}
+
+/* set ctrl_step_axis: reboot note and the STEP axis check. */
+static void ctrl_step_axis_cb(const cli_value_t *var) {
+  ctrl_reboot_note(var);
+  warn_step_axis_without_tilt();
 }
 
 const cli_value_t value_table[] = {
@@ -238,7 +256,7 @@ const cli_value_t value_table[] = {
      VAR_UINT8 | MODE_LOOKUP,
      {.lookup = {TABLE_CTRL_AXIS}},
      offsetof(cats_config_t, canard.step_axis),
-     ctrl_reboot_note},
+     ctrl_step_axis_cb},
     {"ctrl_step_defl",
      VAR_UINT8,
      {.minmax_unsigned = {0, 100}},

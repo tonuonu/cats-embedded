@@ -162,6 +162,11 @@ void CanardIo::Init() {
     }
   }
 
+  if (p.layout == canard::Layout::kRoll2 && p.step_axis != canard::StepAxis::kRoll) {
+    log_warn("Canard: ctrl_step_axis %s with ROLL_2 (roll only): STEP doublets move no canard",
+             ctrl_axis_map[static_cast<uint8_t>(p.step_axis)]);
+  }
+
   const uint16_t servo_events = canard_claimed_servo_events(canard_boot_layout());
   for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
     if ((servo_events & (1U << e)) != 0U) {

@@ -55,7 +55,7 @@ prints a reminder after each `set ctrl_...`.
 | `ctrl_roll_ki` | 0 to 65535 | 200 | x1000 (200 = 0.2). Roll integral gain |
 | `ctrl_tilt_kp` | 0 to 65535 | 0 | x1000. Tilt proportional gain. Must stay 0 until the stage-2 sim |
 | `ctrl_tilt_kd` | 0 to 65535 | 0 | x1000. Tilt derivative gain. Must stay 0 until the stage-2 sim |
-| `ctrl_step_axis` | ROLL, T1, T2 | ROLL | STEP axis. T1/T2 only with FULL_4 |
+| `ctrl_step_axis` | ROLL, T1, T2 | ROLL | STEP axis. T1/T2 only with FULL_4: with ROLL_2 they move no canard (the CLI and the boot log warn) |
 | `ctrl_step_defl` | 0 to 100 | 30 | 0.1 deg, so 30 = 3.0 deg. Doublet amplitude |
 | `ctrl_step_ms` | 50 to 2000 | 300 | ms per side of a doublet |
 | `ctrl_step_delay_ms` | 0 to 10000 | 300 | ms from entering COASTING to the first doublet |

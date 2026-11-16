@@ -459,16 +459,30 @@ static void print_canard_status() {
   }
   const CanardStatus st = task::global_canard_io->Status();
   cli_print_linefeed();
-  cli_printf("control: %s", st.started ? "started" : "not started (waits for READY and the IMU calibration)");
-  const auto state = static_cast<size_t>(st.state);
-  const auto reason = static_cast<size_t>(st.reason);
+  if (!st.started) {
+    cli_print("control: not started (waits for READY and the IMU calibration)");
+  } else if (st.calib_fault) {
+    cli_print("control: started off the pad without the IMU calibration (IMU fault latch)");
+  } else {
+    cli_print("control: started");
+  }
+  const auto name = [](const auto &map, auto value) {
+    const auto i = static_cast<size_t>(value);
+    return i < map.size() ? map[i] : "?";
+  };
   cli_print_linefeed();
-  cli_printf("envelope: %s, reason %s", state < ctrl_state_map.size() ? ctrl_state_map[state] : "?",
-             reason < ctrl_reason_map.size() ? ctrl_reason_map[reason] : "?");
+  cli_printf("envelope: %s, envelope reason %s", name(ctrl_state_map, st.state), name(ctrl_reason_map, st.reason));
+  // CONTROL_INFO reports IMU_FAULT on the pad while the frame check fails; the envelope only latches at activation.
+  cli_print_linefeed();
+  cli_printf("logged reason (CONTROL_INFO): %s%s", name(ctrl_reason_map, st.logged_reason),
+             st.logged_reason != st.reason ? " (frame check fails; latches at activation)" : "");
   cli_print_linefeed();
   const auto acc_z_g = static_cast<double>(st.pad_acc_z_mps2 / 9.81F);
   if (!st.started) {
     cli_print("frame check: no pad samples yet");
+  } else if (!st.pad_sample_seen) {
+    cli_print(st.calib_fault ? "frame check: not run (no pad samples: control started without the IMU calibration)"
+                             : "frame check: not run (no pad samples: control started off the pad)");
   } else if (st.frame_ok) {
     cli_printf("frame check: OK (body z %+.2f g)", acc_z_g);
   } else {
@@ -476,14 +490,9 @@ static void print_canard_status() {
   }
   cli_print_linefeed();
   cli_printf("test: %s", st.test_running ? "running" : "none");
-  const uint8_t n = canard::NumOutputs(static_cast<canard::Layout>(layout));
-  for (uint8_t k = 0U; k < n; ++k) {
+  for (uint8_t k = 0U; k < st.n_outputs; ++k) {
     cli_print_linefeed();
-    cli_printf("output %u: %s", k + 1U, global_canard_outputs[k] != nullptr ? "ok" : "MISSING (IMU fault latch)");
-  }
-  if (st.calib_fault) {
-    cli_print_linefeed();
-    cli_print("calibration: missing when control started (IMU fault latch)");
+    cli_printf("output %u: %s", k + 1U, (st.missing_outputs & (1U << k)) != 0U ? "MISSING (IMU fault latch)" : "ok");
   }
   cli_print_canard_boot_warnings();
 }
@@ -505,19 +514,26 @@ static void cli_cmd_ctrl_test(const char *cmd_name [[maybe_unused]], char *args)
     return;
   }
   canard::TestCommand cmd{};
+  bool capped = false;
   if (args != nullptr && strcmp(args, "sweep") == 0) {
     // every output goes +max, -max, back to trim (1 s each, 3 s per output), plus 1 s margin
     const auto n = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
     cmd = {canard::TestCommand::Kind::kSweep, 0.0F, static_cast<float>(3U * n) + 1.0F};
   } else if (args != nullptr && strncmp(args, "live ", 5) == 0) {
     const canard::LiveTestArgs live = canard::ParseLiveTestArgs(args + 5);
+    if (live.error == canard::LiveTestArgs::Error::kSpeedRange) {
+      cli_print_line("ctrl_test: speed out of range");
+      return;
+    }
+    if (live.error == canard::LiveTestArgs::Error::kDurationRange) {
+      cli_print_line("ctrl_test: duration out of range");
+      return;
+    }
     if (!live.ok) {
       cli_print_line(kUsage);
       return;
     }
-    if (live.capped) {
-      cli_print_line("ctrl_test: duration capped to 120 s");
-    }
+    capped = live.capped;
     cmd = {canard::TestCommand::Kind::kLive, live.speed_mps, live.duration_s};
   } else {
     cli_print_line(kUsage);
@@ -527,6 +543,9 @@ static void cli_cmd_ctrl_test(const char *cmd_name [[maybe_unused]], char *args)
     cli_print_line("ctrl_test: layout is OFF");
   } else if (!task::global_canard_io->StartTest(cmd)) {
     cli_print_line("ctrl_test: only on the pad (READY)");
+  } else if (capped) {
+    // Only once the test runs, so the note never hides a refusal.
+    cli_print_linef("ctrl_test: duration capped to %.0f s", static_cast<double>(canard::kMaxTestS));
   }
 }
 

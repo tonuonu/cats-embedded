@@ -34,8 +34,10 @@ A layout other than `OFF` claims its outputs: event actions `ACT_SERVO_ONE`/`ACT
 claimed output are ignored. The actions are kept, not refused; the CLI warns about them:
 - after `set ev_X` (event X only, against the layout configured for the next boot; the running
   layout is named when it differs) and after `set ctrl_layout` (all events, new layout);
-- for the running layout when the CLI starts and in `ctrl_test status`. Debug (`CATS_DEV`) builds
-  also log them at boot; release builds do not, because `log_warn` compiles out.
+- for the running firmware when the CLI starts and in `ctrl_test status`: the boot layout against
+  the event actions the firmware built at boot (a later `set ev_X` changes them only after reboot).
+  Debug (`CATS_DEV`) builds also log them at boot; release builds do not, because `log_warn`
+  compiles out.
 
 ## Settings
 
@@ -199,15 +201,19 @@ Do these in order, with the board on the bench and the servo horns free.
 8. **IMU noise during the sweep.** `flash_start_write`, `ctrl_test sweep`, `flash_stop_write`,
    `flight_parse`. Check the gyro and accelerometer noise with the servos moving.
 9. **Live.** `ctrl_test live 100` (speed in m/s, finite and above 0; optional duration in s,
-   default 20, capped at 120). ROLL_2:
+   default 20, capped at 120 with a note once the test starts; a number too large for a float,
+   such as 1e39, is refused as out of range). ROLL_2:
    twisting the rocket by hand makes the canards oppose the rotation. FULL_4: the same for roll;
    with the default tilt gains of 0, tilting does not move them.
 10. **Safety returns.** A test ends on its timeout, on `ctrl_test stop` (prints `ctrl_test: stopped`,
     or `ctrl_test: no test running`), or on any FSM change; the canards then return to trim.
     Unplugging USB does not end it.
-11. **Status.** `ctrl_test status` prints the boot layout and mode, whether control has started, the
-    envelope state and reason, the frame check (OK/FAIL with the filtered body-axis specific force
-    in g), whether a test runs, each claimed output (ok/MISSING) and the warnings above.
+11. **Status.** `ctrl_test status` prints the boot layout and mode; whether control has started
+    (or started off the pad without the IMU calibration); the envelope state with the envelope's own
+    reason, and separately the reason CONTROL_INFO logs (on the pad, IMU_FAULT while the frame check
+    fails, although the envelope still reads NONE until activation); the frame check (OK or FAIL
+    with the filtered body-axis specific force in g, or "not run" when control started without pad
+    samples); whether a test runs; each claimed output (ok/MISSING) and the warnings above.
 
 ## Pre-flight check
 

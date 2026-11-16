@@ -38,16 +38,25 @@ static void ctrl_reboot_note(const cli_value_t *var) {
   cli_printf("%s takes effect after save + reboot", var->name);
 }
 
-/* One line per event in `events` (bit e = cats_event_e e) whose servo action layout ignores; when is "" for the
- * running layout or " after reboot" for the configured one. Warn only: the actions are kept. */
-static void warn_claimed_servo_actions(uint16_t events, uint8_t layout, const char *when) {
+/* One line per event in `events` (bit e = cats_event_e e) whose SERVO_ONE/SERVO_TWO action layout ignores. running:
+ * the running firmware's boot-built event map against the boot layout (ignored now); otherwise the current config
+ * against the configured layout (ignored after reboot). Warn only: the actions are kept. */
+static void warn_claimed_servo_actions(uint16_t events, uint8_t layout, bool running) {
   for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
-    if ((events & (1U << e)) != 0U) {
-      cli_print_linefeed();
+    if ((events & (1U << e)) == 0U) {
+      continue;
+    }
+    cli_print_linefeed();
+    if (running) {
       cli_printf(
-          "warning: event %s has a SERVO_ONE/SERVO_TWO action; ctrl_layout %s owns SERVO1/SERVO2%s, so it is "
-          "ignored",
-          event_map[e], ctrl_layout_map[layout], when);
+          "warning: running firmware: event %s has a SERVO_ONE/SERVO_TWO action (boot-time event map); the boot "
+          "ctrl_layout %s owns SERVO1/SERVO2, so it is ignored now",
+          event_map[e], ctrl_layout_map[layout]);
+    } else {
+      cli_printf(
+          "warning: after reboot: event %s has a SERVO_ONE/SERVO_TWO action (current config); ctrl_layout %s "
+          "owns SERVO1/SERVO2, so it will be ignored",
+          event_map[e], ctrl_layout_map[layout]);
     }
   }
 }
@@ -62,9 +71,8 @@ static void warn_step_axis(const canard_config_t &cfg, const char *when) {
 }
 
 void cli_print_canard_boot_warnings() {
-  const uint8_t layout = canard_boot_layout();
-  warn_claimed_servo_actions(canard_claimed_servo_events(layout), layout, "");
-  warn_step_axis(canard_boot_config(), "");
+  warn_claimed_servo_actions(canard_running_claimed_servo_events(), canard_boot_layout(), true);
+  warn_step_axis(canard_boot_config(), " in the running firmware");
 }
 
 /* set ev_X: event X only, against the layout configured for the next boot; the running layout is mentioned when it
@@ -79,15 +87,17 @@ static void ev_servo_check(const cli_value_t *var) {
   const uint8_t configured = global_cats_config.canard.layout;
   const uint8_t running = canard_boot_layout();
   if ((canard_claimed_servo_events(configured) & bit) != 0U) {
-    warn_claimed_servo_actions(bit, configured, " after reboot");
+    warn_claimed_servo_actions(bit, configured, false);
     if (running != configured) {
       cli_print_linefeed();
       cli_printf("(running now: ctrl_layout %s)", ctrl_layout_map[running]);
     }
-  } else if ((canard_claimed_servo_events(running) & bit) != 0U) {
+  } else if ((canard_running_claimed_servo_events() & bit) != 0U) {
     cli_print_linefeed();
-    cli_printf("note: event %s servo action is ignored until reboot: the running ctrl_layout %s owns SERVO1/SERVO2",
-               event_map[index], ctrl_layout_map[running]);
+    cli_printf(
+        "note: running firmware: event %s has a SERVO_ONE/SERVO_TWO action (boot-time event map) that the boot "
+        "ctrl_layout %s ignores until reboot",
+        event_map[index], ctrl_layout_map[running]);
   }
 }
 
@@ -95,7 +105,7 @@ static void ev_servo_check(const cli_value_t *var) {
 static void ctrl_layout_cb(const cli_value_t *var) {
   ctrl_reboot_note(var);
   const uint8_t configured = global_cats_config.canard.layout;
-  warn_claimed_servo_actions(canard_claimed_servo_events(configured), configured, " after reboot");
+  warn_claimed_servo_actions(canard_claimed_servo_events(configured), configured, false);
   warn_step_axis(global_cats_config.canard, " after reboot");
 }
 

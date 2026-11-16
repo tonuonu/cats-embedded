@@ -31,24 +31,37 @@ bool canard_outputs_claimed(uint8_t servo_index);
 /** True when layout (a canard::Layout value) owns event servo output servo_index (0 = SERVO1, 1 = SERVO2). */
 bool canard_layout_claims(uint8_t layout, uint8_t servo_index);
 
-/** Events whose actions use ACT_SERVO_ONE/ACT_SERVO_TWO on an output that layout claims: bit e set for event e
- * (cats_event_e). Those actions are ignored at runtime; the CLI and the boot log warn about them.
+/** Events whose actions in the CURRENT config (global_cats_config.action_array, what the next boot builds) use
+ * ACT_SERVO_ONE/ACT_SERVO_TWO on an output that layout claims: bit e set for event e (cats_event_e). Used for the
+ * after-reboot warnings of `set ev_X` / `set ctrl_layout`.
  */
 uint16_t canard_claimed_servo_events(uint8_t layout);
+
+/** The same for the RUNNING firmware: the boot layout against the event action map built at boot (event_action_map,
+ * which a later `set ev_X` does not change). These actions are ignored now; the boot log (CATS_DEV), the CLI start
+ * and `ctrl_test status` warn about them.
+ */
+uint16_t canard_running_claimed_servo_events();
 
 /** True when cfg has layout ROLL_2 and a T1/T2 STEP axis: ROLL_2 mixes roll only, so STEP doublets move no canard. */
 bool canard_step_axis_moves_nothing(const canard_config_t& cfg);
 
 /** Snapshot of the canard glue for the CLI (`ctrl_test status`), as of the last control step. */
 struct CanardStatus {
-  bool started = false;       ///< control has started (READY reached with the long-axis calibration)
-  bool output_fault = false;  ///< a claimed output is missing
-  bool calib_fault = false;   ///< control started without the long-axis calibration
+  /// Step() has called CanardControl::Update: either READY with the long-axis calibration, or the FSM left the pad
+  /// first, in which case calib_fault is set (control started without the calibration, IMU fault latch).
+  bool started = false;
+  bool calib_fault = false;
+  uint8_t n_outputs = 0;        ///< outputs claimed by the boot layout
+  uint8_t missing_outputs = 0;  ///< bit k: claimed output k is missing (Configure failed at boot), IMU fault latch
   bool test_running = false;
-  bool frame_ok = false;  ///< frame check (Ruling R24) passes; false before the first pad sample
+  bool pad_sample_seen = false;  ///< false: the frame check never ran (not started, or started off the pad)
+  bool frame_ok = false;         ///< frame check (Ruling R24) passes
   float pad_acc_z_mps2 = 0.0F;
   canard::EnvState state = canard::EnvState::kDisabled;  ///< the envelope's own state and reason
   canard::LatchReason reason = canard::LatchReason::kNone;
+  /// The reason logged in CONTROL_INFO: reason, or IMU_FAULT while NEUTRAL_PAD with a failed frame check.
+  canard::LatchReason logged_reason = canard::LatchReason::kNone;
 };
 
 /** Trim of canard output k (0..3) in cfg, in us, clamped to +-300 us; 0 for k > 3. */
@@ -99,8 +112,8 @@ class CanardIo {
   StaticSemaphore_t m_mutex_cb{};
   osMutexId_t m_mutex{nullptr};
   bool m_started = false;
-  /// A claimed output is missing (its Configure failed at boot).
-  bool m_output_fault = false;
+  /// Bit k: claimed output k is missing (its Configure failed at boot). Any bit set is an output fault.
+  uint8_t m_missing_outputs = 0U;
   /// Control started without the long-axis calibration.
   bool m_calib_fault = false;
 };

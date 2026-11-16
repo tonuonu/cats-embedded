@@ -115,6 +115,25 @@ int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k) {
   return trim;
 }
 
+uint16_t canard_running_claimed_servo_events() {
+  uint16_t events = 0U;
+  if (event_action_map == nullptr) {
+    return events;
+  }
+  for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
+    const event_action_map_elem_t& elem = event_action_map[e];
+    for (uint8_t i = 0U; i < elem.num_actions && elem.action_list != nullptr; ++i) {
+      const action_function_e action = elem.action_list[i].action;
+      const bool servo_one = action == ACT_SERVO_ONE && canard_layout_claims(boot_layout, 0U);
+      const bool servo_two = action == ACT_SERVO_TWO && canard_layout_claims(boot_layout, 1U);
+      if (servo_one || servo_two) {
+        events = static_cast<uint16_t>(events | (1U << e));
+      }
+    }
+  }
+  return events;
+}
+
 bool canard_step_axis_moves_nothing(const canard_config_t& cfg) {
   return cfg.layout == static_cast<uint8_t>(canard::Layout::kRoll2) &&
          (cfg.step_axis == static_cast<uint8_t>(canard::StepAxis::kT1) ||
@@ -162,10 +181,10 @@ void CanardIo::Init() {
 
   m_started = false;
   m_calib_fault = false;
-  m_output_fault = false;
+  m_missing_outputs = 0U;
   for (uint8_t k = 0; k < canard::NumOutputs(p.layout); ++k) {
     if (global_canard_outputs[k] == nullptr) {
-      m_output_fault = true;
+      m_missing_outputs = static_cast<uint8_t>(m_missing_outputs | (1U << k));
       log_error("Canard output %u missing: canards held at trim, IMU fault latch", k + 1U);
     }
   }
@@ -177,7 +196,7 @@ void CanardIo::Init() {
              ctrl_axis_map[static_cast<uint8_t>(p.step_axis)]);
   }
 
-  const uint16_t servo_events = canard_claimed_servo_events(canard_boot_layout());
+  const uint16_t servo_events = canard_running_claimed_servo_events();
   for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
     if ((servo_events & (1U << e)) != 0U) {
       log_warn("Event %s: servo action ignored, the canard layout owns SERVO1/SERVO2", event_map[e]);
@@ -216,7 +235,7 @@ void CanardIo::Step(uint32_t tick, flight_fsm_e fsm, const SI_data_t& si, float 
     m_started = true;
     m_calib_fault = !calibrated;
   }
-  in.imu_faulty = imu_faulty || m_output_fault || m_calib_fault;
+  in.imu_faulty = imu_faulty || m_missing_outputs != 0U || m_calib_fault;
   const canard::ControlOutputs out = m_control.Update(in);
   if (m_mutex != nullptr) {
     osMutexRelease(m_mutex);
@@ -252,7 +271,7 @@ bool CanardIo::StartTest(const canard::TestCommand& cmd) {
   if (m_mutex == nullptr || osMutexAcquire(m_mutex, osWaitForever) != osOK) {
     return false;
   }
-  const bool accepted = m_started && !m_output_fault && !m_calib_fault && m_control.StartTest(cmd);
+  const bool accepted = m_started && m_missing_outputs == 0U && !m_calib_fault && m_control.StartTest(cmd);
   osMutexRelease(m_mutex);
   return accepted;
 }
@@ -272,7 +291,10 @@ CanardStatus CanardIo::Status() {
     return st;
   }
   st.started = m_started;
-  st.output_fault = m_output_fault;
+  st.n_outputs = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
+  st.missing_outputs = m_missing_outputs;
+  st.pad_sample_seen = m_control.PadSampleSeen();
+  st.logged_reason = m_control.LoggedReason();
   st.calib_fault = m_calib_fault;
   st.test_running = m_control.TestRunning();
   st.frame_ok = m_control.FrameCheckOk();

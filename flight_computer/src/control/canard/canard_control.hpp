@@ -54,9 +54,14 @@ class CanardControl {
   [[nodiscard]] bool FrameCheckOk() const;
   /// The filtered body z specific force on the pad in m/s^2 (frozen in flight).
   [[nodiscard]] float PadAccZMps2() const { return m_pad_acc_z_mps2; }
-  /// The envelope's own state and latch reason (ControlOutputs::reason may also flag a failed frame check on the pad).
+  /// False until the first pad sample, so also when control started off the pad: the frame check was never run.
+  [[nodiscard]] bool PadSampleSeen() const { return m_pad_acc_seen; }
+  /// The envelope's own state and latch reason.
   [[nodiscard]] EnvState State() const { return m_last_state; }
   [[nodiscard]] LatchReason Reason() const { return m_last_reason; }
+  /// The reason last reported in ControlOutputs (and logged in CONTROL_INFO): Reason(), or IMU_FAULT while
+  /// NEUTRAL_PAD with a failed frame check.
+  [[nodiscard]] LatchReason LoggedReason() const { return m_last_logged_reason; }
 
  private:
   void TestCommandDeg(float dt_s, const float controller_deg[4], float out_deg[4]);
@@ -72,6 +77,7 @@ class CanardControl {
   Phase m_last_phase = Phase::kCalibrating;
   EnvState m_last_state = EnvState::kDisabled;
   LatchReason m_last_reason = LatchReason::kNone;
+  LatchReason m_last_logged_reason = LatchReason::kNone;
   float m_defl_deg[4] = {};
   float m_roll_rate_dps = 0.0F;
   float m_tilt_deg[2] = {};

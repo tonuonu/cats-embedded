@@ -53,6 +53,7 @@ void CanardControl::Reset() {
   m_last_phase = Phase::kCalibrating;
   m_last_state = (m_params.layout == Layout::kOff) ? EnvState::kDisabled : EnvState::kNeutralPad;
   m_last_reason = LatchReason::kNone;
+  m_last_logged_reason = LatchReason::kNone;
   for (float& d : m_defl_deg) {
     d = 0.0F;
   }
@@ -148,6 +149,7 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
     m_last_phase = in.phase;
     m_last_state = d.state;
     m_last_reason = d.reason;
+    m_last_logged_reason = out.reason;
     return out;
   }
 
@@ -259,6 +261,7 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
   m_last_phase = in.phase;
   m_last_state = d.state;
   m_last_reason = d.reason;
+  m_last_logged_reason = out.reason;
   return out;
 }
 

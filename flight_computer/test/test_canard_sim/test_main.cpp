@@ -669,8 +669,11 @@ void Control_FrameCheck_VisibleOnPad() {
   CanardControl ok;
   ok.Configure(SimParams(Layout::kRoll2));
   TEST_ASSERT_FALSE(ok.FrameCheckOk());  // no pad sample yet
+  TEST_ASSERT_FALSE(ok.PadSampleSeen());
   PadUpright(ok, 2.0);
+  TEST_ASSERT_TRUE(ok.PadSampleSeen());
   TEST_ASSERT_TRUE(ok.FrameCheckOk());
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(ok.LoggedReason()));
   TEST_ASSERT_FLOAT_WITHIN(0.01F, static_cast<float>(kGravity), ok.PadAccZMps2());
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(ok.State()));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(ok.Reason()));
@@ -690,9 +693,29 @@ void Control_FrameCheck_VisibleOnPad() {
   TEST_ASSERT_FLOAT_WITHIN(0.01F, -static_cast<float>(kGravity), bad.PadAccZMps2());
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(out.state));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
-  // The envelope itself has not latched: its own reason is still NONE.
+  // The envelope itself has not latched: its own reason is still NONE; the logged reason is IMU_FAULT.
+  TEST_ASSERT_TRUE(bad.PadSampleSeen());
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(bad.State()));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(bad.Reason()));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(bad.LoggedReason()));
+}
+
+void Control_StartedOffThePad_NoPadSamples() {
+  // Control that starts in THRUSTING (no calibration in time) has never seen a pad sample: the status must say so
+  // rather than blame the long-axis sign. The logged reason follows the latch.
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  ControlInputs in;
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kThrusting;
+  in.velocity_mps = 50.0F;
+  in.dt_s = kTickS;
+  (void)ctl.Update(in);
+  TEST_ASSERT_FALSE(ctl.PadSampleSeen());
+  TEST_ASSERT_FALSE(ctl.FrameCheckOk());
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(ctl.State()));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(ctl.LoggedReason()));
 }
 
 void Control_InvertedMount_LatchesImuFaultAtActivation() {
@@ -948,6 +971,7 @@ int main() {
   RUN_TEST(Control_StartTest_AcceptsFinitePositiveDurations);
   RUN_TEST(Control_CancelTest_ReportsWhetherATestRan);
   RUN_TEST(Control_FrameCheck_VisibleOnPad);
+  RUN_TEST(Control_StartedOffThePad_NoPadSamples);
   RUN_TEST(Control_InvertedMount_LatchesImuFaultAtActivation);
   RUN_TEST(Control_TiltedRail10_ActivatesNormally);
   RUN_TEST(Control_Inverted_TripsTiltAbort);

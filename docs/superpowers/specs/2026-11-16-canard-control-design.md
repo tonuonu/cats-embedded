@@ -80,9 +80,27 @@ sense, which is roll.
   - Signal: 1520 µs centre, frames up to 333 Hz.
   - Frame rate is a setting: 50 Hz default for generic servos, 333 Hz for the HV6160 once
     bench-verified.
-- **Servo power:** from an external 5 V supply, sharing ground with the Vega. The Vega supplies the
-  signal lines only; its servo rail is rated 3 A total.
-  - The supply must cover four stalled HV6160s (~1.56 A each at 4.8 V, ~6 A total).
+- **Vega placement (decided with Fable, 2026-11-16):** in the nosecone, on a mast on top of the
+  servo cassette. The board's long axis is on the rocket axis, and the board plane contains the
+  0°–180° canard axis.
+  - Vega and canards share one printed part, so they stay aligned without a tube → coupler → sled
+    chain.
+  - Pyro 1 = drogue charge, aft of the e-bay, reached by a 2-wire lead along the main cord; the
+    nose joint is still closed when it fires.
+  - Pyro 2 = main charge on the nose shoulder bulkhead; firing it releases the nose.
+  - Nothing electrical has to work across a joint after that joint has opened.
+- **Servo power:** directly from the camera's 2S 18650 pack (6.0–8.4 V, inside the HV6160's
+  4.8–8.4 V), through a 7.5 A fuse, with 1000 µF at the cassette.
+  - The Vega has its own 2S LiPo, so servo sag can never brown out recovery.
+  - The Vega servo connectors carry signal and ground only; the 5 V pin is unconnected.
+  - Bench-verify stall current at 8.4 V (estimated ~2.7 A each) and operation from the Vega's
+    3.3 V signal.
+- **Barometer:** the Vega sits in a sealed compartment vented by 4 × Ø2.5 mm ports in the ogive,
+  between the canards.
+  - Ogive ports are not at true static pressure. The error grows with dynamic pressure; rough size
+    ~76 m altitude and ~13 m/s velocity at 173 m/s for Cp = 0.05.
+  - That biases the Kalman velocity used by the gain schedule and `ctrl_v_enable`. It vanishes at
+    apogee and at main. The SHADOW flight measures it.
 - **Outputs:**
   - **SERVO1:** PB4, TIM3_CH1 (existing).
   - **SERVO2:** PB5, TIM3_CH2 (existing).
@@ -125,7 +143,8 @@ sense, which is roll.
 ### Body frame
 
 - **Roll axis:** the long axis is the one calibration picks (`m_calibration.axis`). Its sign comes
-  from the sign of `m_calibration.angle`. On SIPSIK it is board y.
+  from the sign of `m_calibration.angle`. In the nose mount the board's long axis is on the rocket
+  axis.
 - **Transverse axes:** the other two board axes.
 - **Convention:** a fixed, documented mapping from board axes to body axes. Per-output
   reverse flags absorb any sign mismatch, and the bench check proves the signs.
@@ -212,15 +231,23 @@ all exit conditions apply in every mode.
 | `STEP` | open-loop doublet (below), then `NEUTRAL_LATCHED` (reason "step done") | flight 2: measure real roll authority, sign and size, including canard–fin interaction |
 | `CLOSED` | controller output | flight 3 onward |
 
-`STEP` doublet:
-- **When:** it starts `ctrl_step_delay_ms` after the FSM enters COASTING. Coasting is when speed
-  changes slowly, so the response is readable.
-- **Shape:** the command on `ctrl_step_axis` (`ROLL`; `T1`/`T2` only in `FULL_4`) is
-  `+ctrl_step_defl` for `ctrl_step_ms`, then `−ctrl_step_defl` for `ctrl_step_ms`, then trim.
-- **Defaults:** axis `ROLL`, 2°, 300 ms, delay 200 ms.
+`STEP` doublets (reviewed with Fable, 2026-11-16):
+- **When:** `ctrl_step_count` doublets. The first starts `ctrl_step_delay_ms` after the FSM enters
+  COASTING; the rest follow every `ctrl_step_period_ms`.
+  - With the defaults that is 0.3 s, 2.3 s and 4.3 s into coast, at roughly 160, 115 and 85 m/s.
+  - Several dynamic-pressure points let the flight test the 1/q gain schedule; one doublet can't.
+- **Shape:** each doublet commands `±ctrl_step_defl` on `ctrl_step_axis` (`ROLL`; `T1`/`T2` only in
+  `FULL_4`) for `ctrl_step_ms`, then the opposite sign for `ctrl_step_ms`, then trim.
+  - The leading sign alternates + − +.
+- **Defaults:** axis `ROLL`, 2°, 300 ms per side, delay 300 ms, count 3, period 2000 ms.
+  - 2° gives about 98 °/s of steady roll at 173 m/s if the canards act alone. That is a clear
+    signal, well under the exit threshold, and still ~30 °/s if the fins cancel 70 %.
+- **Latch:** after the last doublet, `NEUTRAL_LATCHED` (reason "step done").
 - **Extra exit:** |roll rate| > 360 °/s → neutral latch.
-- **Analysis:** the measured roll acceleration and q at the step give the roll effectiveness to feed
-  back into the simulation and gains.
+- **Analysis:** q falls about 40 % per second in coast, so speed does not change slowly. Fit the
+  measured roll acceleration against the logged q and V at each doublet, rather than reading it off
+  a plateau. That gives the roll effectiveness (sign, size, and how it scales with q) to feed back
+  into the simulation and gains.
 
 ### Who owns the outputs
 
@@ -243,7 +270,7 @@ board's saved config to defaults once.
 | `ctrl_v_ref` | m/s, gain reference speed | 100 |
 | `ctrl_max_defl` | deg, command clamp | 8 |
 | `ctrl_flight_mode` | `SHADOW` / `STEP` / `CLOSED` | `SHADOW` |
-| `ctrl_step_axis`, `ctrl_step_defl`, `ctrl_step_ms`, `ctrl_step_delay_ms` | step-test doublet | `ROLL`, 2°, 300 ms, 200 ms |
+| `ctrl_step_axis`, `ctrl_step_defl`, `ctrl_step_ms`, `ctrl_step_delay_ms`, `ctrl_step_count`, `ctrl_step_period_ms` | step-test doublets | `ROLL`, 2°, 300 ms, 300 ms, 3, 2000 ms |
 | `ctrl_abort_tilt` | deg, latch-to-neutral tilt | 30 |
 | `ctrl_roll_kp`, `ctrl_roll_ki` | roll gains at `v_ref` | from simulation |
 | `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | from simulation |
@@ -273,6 +300,8 @@ The builder chooses the fixed-point/scaling of each stored field.
 
 - **CLI `ctrl_test sweep`:** moves each claimed output through ±max deflection and back to trim, one
   at a time. Used for wiring, signs and `us_per_deg`.
+  - It also logs the IMU throughout. The Vega sits on the servo cassette, so servo vibration must
+    be checked against accelerometer noise and the liftoff threshold.
 - **CLI `ctrl_test live <speed>`:** runs the full controller on the ground for a fixed time with
   speed forced to `<speed>`, so twisting or tilting the rocket by hand shows the corrective
   deflections.
@@ -322,8 +351,11 @@ The builder chooses the fixed-point/scaling of each stored field.
   - twist test (`live`): the canards oppose the hand rotation;
   - `FULL_4` tilt test: the canards push back towards vertical.
 - **Flight plan** (owner chose the step-test path, 2026-11-16):
-  1. Flight 1: `ROLL_2`, `SHADOW`.
-  2. Flight 2: `ROLL_2`, `STEP` (roll doublet).
+  1. Flight 1: `ROLL_2`, `SHADOW`. Objectives:
+     - estimator and loop timing;
+     - the baro error from the ogive ports, compared against GNSS and `fl002`, and its effect on the
+       Kalman velocity.
+  2. Flight 2: `ROLL_2`, `STEP` (three roll doublets).
   3. Flight 3: `ROLL_2`, `CLOSED`, with gains updated from flight 2.
 
 ## Left to the builder

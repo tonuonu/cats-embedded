@@ -14,6 +14,12 @@ using Source = EnvelopeDecision::Source;
 
 bool IsPadPhase(Phase phase) { return phase == Phase::kCalibrating || phase == Phase::kReady; }
 
+/// Fail safe: a non-finite input makes every threshold check meaningless, so it counts as an IMU fault.
+bool AnyNonFinite(const EnvelopeInputs& in) {
+  return !(std::isfinite(in.v_mps) && std::isfinite(in.tilt_mag_deg) && std::isfinite(in.max_abs_gyro_dps) &&
+           std::isfinite(in.roll_rate_dps) && std::isfinite(in.roll_cmd_deg) && std::isfinite(in.dt_s));
+}
+
 }  // namespace
 
 void Envelope::Configure(const CanardParams& params) { m_params = params; }
@@ -48,31 +54,32 @@ void Envelope::Latch(LatchReason reason) {
 }
 
 /// Exit priority when several conditions hit in the same Update (first match wins): kSim, kImuFault,
-/// kGyroSat, kDrogue, kTilt, kStepRollRate, kAuthority, kLowSpeed. Applies to kActive; kSim also applies
+/// kGyroSat, kDrogue, kTilt, kStepRollRate, kAuthority, kLowSpeed. A non-finite input counts as kImuFault.
+/// Threshold trips are written so that NaN trips them. Applies to kActive; kSim also applies
 /// from kNeutralPad (handled in Update).
 bool Envelope::ExitCondition(const EnvelopeInputs& in, LatchReason* reason) {
   // The authority timer only runs while its condition holds; it resets whenever the condition is false.
   const bool authority_cond =
-      m_params.mode == FlightMode::kClosed && std::fabs(in.roll_rate_dps) > m_params.authority_rate_dps &&
+      m_params.mode == FlightMode::kClosed && !(std::fabs(in.roll_rate_dps) <= m_params.authority_rate_dps) &&
       in.roll_cmd_saturated && ((in.roll_cmd_deg > 0.0F && in.roll_rate_dps < 0.0F) ||
                                 (in.roll_cmd_deg < 0.0F && in.roll_rate_dps > 0.0F));
   m_authority_timer_s = authority_cond ? m_authority_timer_s + in.dt_s : 0.0F;
 
   if (in.sim_running) {
     *reason = LatchReason::kSim;
-  } else if (in.imu_faulty) {
+  } else if (in.imu_faulty || AnyNonFinite(in)) {
     *reason = LatchReason::kImuFault;
-  } else if (in.max_abs_gyro_dps >= m_params.gyro_sat_dps) {
+  } else if (!(in.max_abs_gyro_dps < m_params.gyro_sat_dps)) {
     *reason = LatchReason::kGyroSat;
   } else if (in.phase == Phase::kRecovery) {
     *reason = LatchReason::kDrogue;
-  } else if (in.tilt_mag_deg > m_params.abort_tilt_deg) {
+  } else if (!(in.tilt_mag_deg <= m_params.abort_tilt_deg)) {
     *reason = LatchReason::kTilt;
-  } else if (m_params.mode == FlightMode::kStep && std::fabs(in.roll_rate_dps) > m_params.step_abort_rate_dps) {
+  } else if (m_params.mode == FlightMode::kStep && !(std::fabs(in.roll_rate_dps) <= m_params.step_abort_rate_dps)) {
     *reason = LatchReason::kStepRollRate;
   } else if (authority_cond && m_authority_timer_s >= m_params.authority_time_s) {
     *reason = LatchReason::kAuthority;
-  } else if (in.phase == Phase::kCoasting && in.v_mps < m_params.v_enable) {
+  } else if (in.phase == Phase::kCoasting && !(in.v_mps >= m_params.v_enable)) {
     *reason = LatchReason::kLowSpeed;
   } else {
     return false;
@@ -87,7 +94,8 @@ float Envelope::StepCommand(float dt_s) {
     m_step_started = true;
     m_step_t_s = 0.0F;
   }
-  const float t = m_step_t_s;
+  // Half a sample of tolerance makes doublet edges land on the exact sample despite float accumulation.
+  const float t = m_step_t_s + 0.5F * dt_s;
   m_step_t_s += dt_s;
   const float last_end =
       m_params.step_delay_s +
@@ -114,6 +122,8 @@ EnvelopeDecision Envelope::Update(const EnvelopeInputs& in) {
   if (m_state == EnvState::kNeutralPad) {
     if (in.sim_running) {
       Latch(LatchReason::kSim);
+    } else if (AnyNonFinite(in)) {
+      Latch(LatchReason::kImuFault);
     } else if (in.phase >= Phase::kThrusting && in.v_mps >= m_params.v_enable) {
       m_state = EnvState::kActive;
     }

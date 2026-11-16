@@ -4,6 +4,8 @@
 
 #include <unity.h>
 
+#include <cmath>
+
 #include "control/canard/envelope.hpp"
 
 using namespace canard;
@@ -300,6 +302,129 @@ void Envelope_LatchIsPermanent() {
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(e.Update(Coast()).state));
 }
 
+void Envelope_NaN_Active_LatchesImuFault() {
+  const float nan = std::nanf("");
+  for (int field = 0; field < 6; ++field) {
+    Envelope e = Active(Params());
+    EnvelopeInputs in = Coast();
+    float* f[6] = {&in.v_mps, &in.tilt_mag_deg, &in.max_abs_gyro_dps, &in.roll_rate_dps, &in.roll_cmd_deg, &in.dt_s};
+    *f[field] = nan;
+    AssertLatched(e.Update(in), LatchReason::kImuFault);
+  }
+}
+
+void Envelope_NaN_OnPad_LatchesNeverActivates() {
+  Envelope e;
+  e.Configure(Params());
+  e.Reset();
+  EnvelopeInputs in = Coast(std::nanf(""));
+  AssertLatched(e.Update(in), LatchReason::kImuFault);
+  AssertLatched(e.Update(Coast()), LatchReason::kImuFault);
+}
+
+void Envelope_Step_FirstCoastUpdateStartsClock() {
+  Envelope e;
+  e.Configure(Params(FlightMode::kStep));
+  e.Reset();
+  EnvelopeInputs in = Coast();
+  in.phase = Phase::kThrusting;
+  in.dt_s = 0.05F;
+  for (int k = 0; k < 40; ++k) {  // 2 s of boost: no step command, source step
+    EnvelopeDecision d = e.Update(in);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6F, 0.0F, d.step_cmd_deg);
+  }
+  in.phase = Phase::kCoasting;
+  for (int k = 0; k < 12; ++k) {
+    EnvelopeDecision d = e.Update(in);
+    TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(d.state));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6F, k >= 6 ? 3.0F : 0.0F, d.step_cmd_deg);
+  }
+}
+
+void Envelope_Step_ExactEdgesAt100Hz() {
+  Envelope e;
+  e.Configure(Params(FlightMode::kStep));
+  e.Reset();
+  EnvelopeInputs in = Coast();
+  in.dt_s = 0.01F;
+  int first = -1, pos = 0, neg = 0, latch_at = -1;
+  for (int k = 0; k < 600 && latch_at < 0; ++k) {
+    EnvelopeDecision d = e.Update(in);
+    if (d.state == EnvState::kNeutralLatched) {
+      latch_at = k;
+      break;
+    }
+    if (k < 100) {
+      if (d.step_cmd_deg != 0.0F && first < 0) first = k;
+      if (d.step_cmd_deg > 0.0F) ++pos;
+      if (d.step_cmd_deg < 0.0F) ++neg;
+    }
+  }
+  TEST_ASSERT_EQUAL_INT(30, first);
+  TEST_ASSERT_EQUAL_INT(30, pos);
+  TEST_ASSERT_EQUAL_INT(30, neg);
+  TEST_ASSERT_EQUAL_INT(490, latch_at);
+}
+
+void Envelope_Step_LatchTimePinned() {
+  Envelope e;
+  e.Configure(Params(FlightMode::kStep));
+  e.Reset();
+  EnvelopeInputs in = Coast();
+  in.dt_s = 0.05F;
+  for (int k = 0; k <= 97; ++k) {  // t = 4.85 s is the last sample before 4.9 s
+    TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(e.Update(in).state));
+  }
+  AssertLatched(e.Update(in), LatchReason::kStepDone);  // t = 4.90 s
+}
+
+void Envelope_Authority_BothSignPairs() {
+  EnvelopeInputs in = Coast();
+  in.dt_s = 0.01F;
+  in.roll_cmd_saturated = true;
+  in.roll_rate_dps = -200.0F;
+  in.roll_cmd_deg = 8.0F;
+  Envelope e = Active(Params());
+  EnvelopeDecision d;
+  for (int i = 0; i < 60; ++i) d = e.Update(in);
+  AssertLatched(d, LatchReason::kAuthority);
+  in.roll_rate_dps = 200.0F;
+  Envelope a = Active(Params());
+  for (int i = 0; i < 100; ++i) d = a.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(d.state));
+}
+
+void Envelope_ExitPriority_SimBeforeImuFault() {
+  Envelope e = Active(Params());
+  EnvelopeInputs in = Coast();
+  in.sim_running = true;
+  in.imu_faulty = true;
+  AssertLatched(e.Update(in), LatchReason::kSim);
+}
+
+void Envelope_ActivatingInRecovery_LatchesDrogueNoControllerCycle() {
+  Envelope e;
+  e.Configure(Params());
+  e.Reset();
+  EnvelopeInputs in = Coast();
+  in.phase = Phase::kRecovery;
+  AssertLatched(e.Update(in), LatchReason::kDrogue);
+}
+
+void Envelope_NoLowSpeedLatchAtExactlyVenable() {
+  Envelope e = Active(Params());
+  EnvelopeDecision d = e.Update(Coast(40.0F));
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(d.state));
+}
+
+void Envelope_StartTest_RefusedAfterLatch() {
+  Envelope e = Active(Params());
+  EnvelopeInputs in = Coast();
+  in.imu_faulty = true;
+  e.Update(in);
+  TEST_ASSERT_FALSE(e.StartTest({TestCommand::Kind::kSweep, 0.0F, 5.0F}, Phase::kReady));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(Envelope_StartsInNeutralPad_UntilThrusting);
@@ -320,5 +445,15 @@ int main() {
   RUN_TEST(Envelope_TestOverride_CancelledByPhaseChange);
   RUN_TEST(Envelope_TestOverride_TimesOut);
   RUN_TEST(Envelope_LatchIsPermanent);
+  RUN_TEST(Envelope_NaN_Active_LatchesImuFault);
+  RUN_TEST(Envelope_NaN_OnPad_LatchesNeverActivates);
+  RUN_TEST(Envelope_Step_FirstCoastUpdateStartsClock);
+  RUN_TEST(Envelope_Step_ExactEdgesAt100Hz);
+  RUN_TEST(Envelope_Step_LatchTimePinned);
+  RUN_TEST(Envelope_Authority_BothSignPairs);
+  RUN_TEST(Envelope_ExitPriority_SimBeforeImuFault);
+  RUN_TEST(Envelope_ActivatingInRecovery_LatchesDrogueNoControllerCycle);
+  RUN_TEST(Envelope_NoLowSpeedLatchAtExactlyVenable);
+  RUN_TEST(Envelope_StartTest_RefusedAfterLatch);
   return UNITY_END();
 }

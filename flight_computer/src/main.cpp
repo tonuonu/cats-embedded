@@ -9,6 +9,9 @@
 #include "drivers/adc.hpp"
 
 #include "config/globals.hpp"
+#include "control/canard/canard_types.hpp"
+#include "control/canard/mixer.hpp"
+#include "control/canard_io.hpp"
 #include "util/battery.hpp"
 #include "util/log.h"
 #include "util/task_util.hpp"
@@ -18,6 +21,7 @@
 
 #include "drivers/gpio.hpp"
 #include "drivers/pwm.hpp"
+#include "drivers/servo_output.hpp"
 #include "sensors/lsm6dso32.hpp"
 #include "sensors/ms5607.hpp"
 
@@ -39,6 +43,37 @@ extern driver::Servo* global_servo2;
 static void init_logging() {
   log_set_level(LOG_TRACE);
   log_enable();
+}
+
+/** Builds the canard servo outputs of the configured layout and sets them to centre + trim. They are started with the
+ * other PWM channels. An output whose timer cannot be configured stays nullptr and never pulses.
+ */
+static void init_canard_outputs() {
+  const canard_config_t& cfg = global_cats_config.canard;
+  const auto layout = static_cast<canard::Layout>(cfg.layout);
+
+  static driver::ServoOutput canard_out1(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_1);
+  static driver::ServoOutput canard_out2(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_2);
+  driver::ServoOutput* outputs[4] = {&canard_out1, &canard_out2, nullptr, nullptr};
+
+  if (layout == canard::Layout::kFull4) {
+    target_switch_uart2_to_servo_outputs();
+    static driver::ServoOutput canard_out3(AUX_SERVO_TIMER_HANDLE, AUX_SERVO_TIMER_CHANNEL_3);
+    static driver::ServoOutput canard_out4(AUX_SERVO_TIMER_HANDLE, AUX_SERVO_TIMER_CHANNEL_4);
+    outputs[2] = &canard_out3;
+    outputs[3] = &canard_out4;
+  }
+
+  // Every output is configured before any is started: Configure() re-initialises the shared timer.
+  for (uint8_t k = 0; k < canard::NumOutputs(layout); ++k) {
+    if (!outputs[k]->Configure(cfg.servo_hz)) {
+      log_error("Canard output %u: cannot configure %u Hz", k + 1U, static_cast<unsigned>(cfg.servo_hz));
+      continue;
+    }
+    // Neutral pulse: centre + trim, clamped like every flight pulse.
+    outputs[k]->SetPulseUs(canard::PulseUs(0.0F, cfg.center_us, cfg.trim_us[k], false, 0.0F));
+    global_canard_outputs[k] = outputs[k];
+  }
 }
 
 /**
@@ -73,13 +108,6 @@ int main() {
   // Build the PWM channels
   static driver::Pwm pwm_buzzer(BUZZER_TIMER_HANDLE, BUZZER_TIMER_CHANNEL);
 
-  static driver::Pwm pwm_servo1(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_1);
-  static driver::Pwm pwm_servo2(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_2);
-
-  // Build the servos
-  static driver::Servo servo1(pwm_servo1, 50U);
-  static driver::Servo servo2(pwm_servo2, 50U);
-
   // Build the buzzer
   static driver::Buzzer buzzer(pwm_buzzer);
 
@@ -88,9 +116,6 @@ int main() {
   static sensor::Lsm6dso32 imu(spi1, imu_cs);
   static sensor::Ms5607 barometer(spi1, barometer_cs);
   // NOLINTEND(misc-const-correctness)
-
-  global_servo1 = &servo1;
-  global_servo2 = &servo2;
 
   init_logging();
   log_info("System initialization complete.");
@@ -103,9 +128,23 @@ int main() {
   load_and_set_config();
   log_info("Config load complete.");
 
-  // After loading the config we can set the servos to the initial position
-  servo1.SetPosition(global_cats_config.initial_servo_position[0]);
-  servo2.SetPosition(global_cats_config.initial_servo_position[1]);
+  if (canard_outputs_claimed(0U)) {
+    // The canard layout owns SERVO1/SERVO2: no event servos, global_servo1/2 stay nullptr.
+    init_canard_outputs();
+  } else {
+    // Build the servos
+    static driver::Pwm pwm_servo1(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_1);
+    static driver::Pwm pwm_servo2(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_2);
+    static driver::Servo servo1(pwm_servo1, 50U);
+    static driver::Servo servo2(pwm_servo2, 50U);
+
+    global_servo1 = &servo1;
+    global_servo2 = &servo2;
+
+    // After loading the config we can set the servos to the initial position
+    servo1.SetPosition(global_cats_config.initial_servo_position[0]);
+    servo2.SetPosition(global_cats_config.initial_servo_position[1]);
+  }
 
   // Check if the test button is pressed during boot up and if so enter test mode
   if (!test_button.GetState() && strlen(global_cats_config.telemetry_settings.test_phrase) > 0) {
@@ -121,8 +160,17 @@ int main() {
   }
 
   // Start the pwm channels
-  servo1.Start();
-  servo2.Start();
+  if (global_servo1 != nullptr) {
+    global_servo1->Start();
+  }
+  if (global_servo2 != nullptr) {
+    global_servo2->Start();
+  }
+  for (driver::ServoOutput* output : global_canard_outputs) {
+    if (output != nullptr) {
+      output->Start();
+    }
+  }
 
   HAL_Delay(100);
   init_devices(imu, barometer);

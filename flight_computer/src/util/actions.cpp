@@ -6,6 +6,7 @@
 
 #include "config/cats_config.hpp"
 #include "config/globals.hpp"
+#include "control/canard_io.hpp"
 #include "drivers/servo.hpp"
 #include "flash/lfs_custom.hpp"
 #include "target.hpp"
@@ -90,6 +91,10 @@ bool low_level_channel_one(int16_t state) {
 // Servo Outputs
 
 bool servo_channel_one(int16_t position) {
+  // The canard controller owns this output: the event action is ignored, not an error.
+  if (canard_outputs_claimed(0U)) {
+    return true;
+  }
   if (global_servo1 == nullptr) {
     return false;
   }
@@ -101,6 +106,10 @@ bool servo_channel_one(int16_t position) {
 }
 
 bool servo_channel_two(int16_t position) {
+  // The canard controller owns this output: the event action is ignored, not an error.
+  if (canard_outputs_claimed(1U)) {
+    return true;
+  }
   if (global_servo2 == nullptr) {
     return false;
   }

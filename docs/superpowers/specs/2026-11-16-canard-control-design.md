@@ -336,7 +336,7 @@ The builder chooses the fixed-point/scaling of each stored field.
   - So `ctrl_test` runs inside the live pipeline as a test override in the control module.
   - It is accepted only while the FSM is READY (CALIBRATING comes before the control start gate; the
     board reaches READY about 10 s after boot when held still).
-  - Any FSM transition, and the timeout, cancel it and return to neutral.
+  - Any FSM transition, the timeout (at most 120 s), and `ctrl_test stop` cancel it and return to neutral.
   - The override replaces the envelope's output; it is not a second writer to the timers.
 - **CLI `sim`:** it drives the real FSM through THRUSTING/COASTING with a frozen gyro. While a
   simulation runs, the envelope is forced to `NEUTRAL_LATCHED` (reason "sim"), so the canards never

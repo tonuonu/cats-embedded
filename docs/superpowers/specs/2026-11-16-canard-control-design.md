@@ -312,6 +312,9 @@ The builder chooses the fixed-point/scaling of each stored field.
   - the four commanded deflections;
   - envelope state and the latch reason.
 - **Rec mask:** added to the default mask.
+- **Log budget:** with a layout on, CONTROL_INFO adds one entry per 10 ms tick, so the pre-liftoff
+  history shrinks from about 768 ms to about 640 ms and flash writes rise about 20 %. Layout OFF is
+  unaffected.
 - **Readers:** the firmware's own `flight_parse` CLI is updated to print it.
 - **Outside this repo:** `generate_charts.py` in MyLevel1Peregrine stops at the first unknown record
   type, so it must learn the new record before it can read new logs. That's a follow-up there.
@@ -331,7 +334,8 @@ The builder chooses the fixed-point/scaling of each stored field.
   - The USB CLI *does* run alongside the flight tasks. `task_health_monitor` starts it when USB is
     detected, while sensors, estimation and FSM are already running.
   - So `ctrl_test` runs inside the live pipeline as a test override in the control module.
-  - It is accepted only while the FSM is CALIBRATING or READY.
+  - It is accepted only while the FSM is READY (CALIBRATING comes before the control start gate; the
+    board reaches READY about 10 s after boot when held still).
   - Any FSM transition, and the timeout, cancel it and return to neutral.
   - The override replaces the envelope's output; it is not a second writer to the timers.
 - **CLI `sim`:** it drives the real FSM through THRUSTING/COASTING with a frozen gyro. While a

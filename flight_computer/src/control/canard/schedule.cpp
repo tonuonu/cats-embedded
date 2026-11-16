@@ -21,9 +21,7 @@ float IsaDensity(float altitude_agl_m) {
   return kSeaLevelDensity * std::pow(1.0F - kLapseCoeffPerM * h, kLapseExponent);
 }
 
-float DynamicPressure(float v_mps, float altitude_agl_m) {
-  return 0.5F * IsaDensity(altitude_agl_m) * v_mps * v_mps;
-}
+float DynamicPressure(float v_mps, float altitude_agl_m) { return 0.5F * IsaDensity(altitude_agl_m) * v_mps * v_mps; }
 
 float GainScale(float v_mps, float altitude_agl_m, float v_ref, float v_enable) {
   const float q_ref = DynamicPressure(v_ref, 0.0F);

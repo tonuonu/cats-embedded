@@ -67,11 +67,9 @@ void ControlAttitude::UpdateFlight(const float gyro_body_dps[3], float dt_s) {
   Integrate(omega, dt_s);
 }
 
-void ControlAttitude::UpdatePad(const float gyro_body_dps[3], const float acc_body_mps2[3],
-                                float dt_s) {
-  const float acc_norm =
-      std::sqrt(acc_body_mps2[0] * acc_body_mps2[0] + acc_body_mps2[1] * acc_body_mps2[1] +
-                acc_body_mps2[2] * acc_body_mps2[2]);
+void ControlAttitude::UpdatePad(const float gyro_body_dps[3], const float acc_body_mps2[3], float dt_s) {
+  const float acc_norm = std::sqrt(acc_body_mps2[0] * acc_body_mps2[0] + acc_body_mps2[1] * acc_body_mps2[1] +
+                                   acc_body_mps2[2] * acc_body_mps2[2]);
   const bool acc_valid = std::fabs(acc_norm - kGravity) <= kAccTolerance;
 
   float omega[3] = {0.0F, 0.0F, 0.0F};
@@ -88,10 +86,8 @@ void ControlAttitude::UpdatePad(const float gyro_body_dps[3], const float acc_bo
     const float y = q_[2];
     const float z = q_[3];
     const float w = q_[0];
-    const float up[3] = {2.0F * (x * z - w * y), 2.0F * (y * z + w * x),
-                         1.0F - 2.0F * (x * x + y * y)};
-    const float m[3] = {acc_body_mps2[0] / acc_norm, acc_body_mps2[1] / acc_norm,
-                        acc_body_mps2[2] / acc_norm};
+    const float up[3] = {2.0F * (x * z - w * y), 2.0F * (y * z + w * x), 1.0F - 2.0F * (x * x + y * y)};
+    const float m[3] = {acc_body_mps2[0] / acc_norm, acc_body_mps2[1] / acc_norm, acc_body_mps2[2] / acc_norm};
     // Correction rate (m x up) / tau rotates up toward m.
     omega[0] += (m[1] * up[2] - m[2] * up[1]) / kLevelTauS;
     omega[1] += (m[2] * up[0] - m[0] * up[2]) / kLevelTauS;

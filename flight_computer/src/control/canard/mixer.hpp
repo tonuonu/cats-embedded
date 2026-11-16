@@ -20,7 +20,6 @@ void Mix(Layout layout, float u_roll, float u_t1, float u_t2, float max_defl_deg
 
 /// Servo pulse width in microseconds: center + trim + (reverse ? -1 : 1) * defl * us_per_deg, rounded to
 /// nearest and clamped to [800, 2200].
-std::uint16_t PulseUs(float defl_deg, std::uint16_t center_us, std::int16_t trim_us, bool reverse,
-                      float us_per_deg);
+std::uint16_t PulseUs(float defl_deg, std::uint16_t center_us, std::int16_t trim_us, bool reverse, float us_per_deg);
 
 }  // namespace canard

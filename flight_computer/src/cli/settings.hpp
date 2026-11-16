@@ -16,8 +16,16 @@
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define ARRAYLEN(x) (sizeof(x) / sizeof((x)[0]))
 
-enum lookup_table_index_e { TABLE_EVENTS = 0, TABLE_ACTIONS, TABLE_POWER, TABLE_SPEEDS, TABLE_BATTERY,
-                           TABLE_CTRL_LAYOUT, TABLE_CTRL_MODE, TABLE_CTRL_AXIS };
+enum lookup_table_index_e {
+  TABLE_EVENTS = 0,
+  TABLE_ACTIONS,
+  TABLE_POWER,
+  TABLE_SPEEDS,
+  TABLE_BATTERY,
+  TABLE_CTRL_LAYOUT,
+  TABLE_CTRL_MODE,
+  TABLE_CTRL_AXIS
+};
 
 inline constexpr uint8_t VALUE_TYPE_OFFSET = 0;
 inline constexpr uint8_t VALUE_SECTION_OFFSET = 3;
@@ -91,8 +99,8 @@ struct cli_value_t {
   callback_f cb;
 } __attribute__((packed));
 
-inline constexpr std::array<EnumToStrMap, 8> lookup_tables{event_map,         action_map,     on_off_map, recorder_speed_map,
-                                                           battery_map,       ctrl_layout_map, ctrl_mode_map, ctrl_axis_map};
+inline constexpr std::array<EnumToStrMap, 8> lookup_tables{
+    event_map, action_map, on_off_map, recorder_speed_map, battery_map, ctrl_layout_map, ctrl_mode_map, ctrl_axis_map};
 
 extern const uint16_t value_table_entry_count;
 

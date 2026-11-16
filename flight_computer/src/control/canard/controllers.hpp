@@ -24,8 +24,8 @@ class RollController {
 class TiltController {
  public:
   /// tilt_deg and rate_t_dps hold (t1, t2) and (w_t1, w_t2). out_u is {0, 0} below tilt_v_min.
-  void Update(const float tilt_deg[2], const float rate_t_dps[2], float gain_scale, float kp, float kd,
-              float v_mps, float tilt_v_min, float out_u[2]) const;
+  void Update(const float tilt_deg[2], const float rate_t_dps[2], float gain_scale, float kp, float kd, float v_mps,
+              float tilt_v_min, float out_u[2]) const;
 };
 
 }  // namespace canard

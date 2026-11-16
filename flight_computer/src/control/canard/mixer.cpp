@@ -68,8 +68,7 @@ void Mix(Layout layout, float u_roll, float u_t1, float u_t2, float max_defl_deg
   }
 }
 
-std::uint16_t PulseUs(float defl_deg, std::uint16_t center_us, std::int16_t trim_us, bool reverse,
-                      float us_per_deg) {
+std::uint16_t PulseUs(float defl_deg, std::uint16_t center_us, std::int16_t trim_us, bool reverse, float us_per_deg) {
   const float signed_defl = reverse ? -defl_deg : defl_deg;
   const float us = static_cast<float>(center_us) + static_cast<float>(trim_us) + signed_defl * us_per_deg;
   // Clamp before rounding: the value is then positive, so lround is plain round-to-nearest.

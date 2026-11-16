@@ -61,8 +61,8 @@ bool Envelope::ExitCondition(const EnvelopeInputs& in, LatchReason* reason) {
   // The authority timer only runs while its condition holds; it resets whenever the condition is false.
   const bool authority_cond =
       m_params.mode == FlightMode::kClosed && !(std::fabs(in.roll_rate_dps) <= m_params.authority_rate_dps) &&
-      in.roll_cmd_saturated && ((in.roll_cmd_deg > 0.0F && in.roll_rate_dps < 0.0F) ||
-                                (in.roll_cmd_deg < 0.0F && in.roll_rate_dps > 0.0F));
+      in.roll_cmd_saturated &&
+      ((in.roll_cmd_deg > 0.0F && in.roll_rate_dps < 0.0F) || (in.roll_cmd_deg < 0.0F && in.roll_rate_dps > 0.0F));
   m_authority_timer_s = authority_cond ? m_authority_timer_s + in.dt_s : 0.0F;
 
   if (in.sim_running) {
@@ -143,8 +143,7 @@ EnvelopeDecision Envelope::Update(const EnvelopeInputs& in) {
   // Test override: only meaningful on the pad; ends on a phase change, a latch or when its time is up.
   if (m_test_running) {
     m_test_elapsed_s += in.dt_s;
-    if (m_state != EnvState::kNeutralPad || in.phase != m_test_phase ||
-        m_test_elapsed_s >= m_test_duration_s) {
+    if (m_state != EnvState::kNeutralPad || in.phase != m_test_phase || m_test_elapsed_s >= m_test_duration_s) {
       m_test_running = false;
     }
   }

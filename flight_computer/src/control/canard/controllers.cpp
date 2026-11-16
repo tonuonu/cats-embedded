@@ -13,11 +13,10 @@ void RollController::Reset() {
   m_prev_out = 0.0F;
 }
 
-float RollController::Update(float roll_rate_dps, float gain_scale, float kp, float ki, float limit_deg,
-                             float dt_s) {
+float RollController::Update(float roll_rate_dps, float gain_scale, float kp, float ki, float limit_deg, float dt_s) {
   // A positive rate drives the output negative: freeze when already saturated that way.
-  const bool saturated_same_dir = (roll_rate_dps > 0.0F && m_prev_out <= -limit_deg) ||
-                                  (roll_rate_dps < 0.0F && m_prev_out >= limit_deg);
+  const bool saturated_same_dir =
+      (roll_rate_dps > 0.0F && m_prev_out <= -limit_deg) || (roll_rate_dps < 0.0F && m_prev_out >= limit_deg);
   if (!saturated_same_dir) {
     m_integral += roll_rate_dps * dt_s;
   }
@@ -31,8 +30,8 @@ float RollController::Update(float roll_rate_dps, float gain_scale, float kp, fl
   return m_prev_out;
 }
 
-void TiltController::Update(const float tilt_deg[2], const float rate_t_dps[2], float gain_scale, float kp,
-                            float kd, float v_mps, float tilt_v_min, float out_u[2]) const {
+void TiltController::Update(const float tilt_deg[2], const float rate_t_dps[2], float gain_scale, float kp, float kd,
+                            float v_mps, float tilt_v_min, float out_u[2]) const {
   if (v_mps < tilt_v_min) {
     out_u[0] = 0.0F;
     out_u[1] = 0.0F;

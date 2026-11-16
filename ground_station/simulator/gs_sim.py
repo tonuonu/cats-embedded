@@ -38,7 +38,8 @@ LONG_PRESS_MS = 500
 REPEAT_MS = 100
 BUTTONS = ("up", "down", "left", "right", "center", "ok", "back")
 MENU_SCREENS = ("live", "recovery", "testing", "data", "sensors", "settings")
-SETTING_COUNTS = (4, 4, 3)
+SETTING_COUNTS = (4, 4, 4)
+CSV_HEADER = "link,ts[deciseconds],state,errors,lat[deg/10000],lon[deg/10000],altitude[m],velocity[m/s],battery[decivolts],pyro1,pyro2\n"
 
 assert BOOT_MS <= MAXIMUM_BOOT_MS
 assert BOOT_MS % INTRO_FRAME_MS == 0
@@ -237,11 +238,12 @@ def defaults() -> dict[str, Any]:
              "info": {"linkQuality": 0, "rssi": 0, "snr": 0, "lastUpdateMs": 0, "updated": False}},
         ],
         "navigation": {"homeLatitude": 0.0, "homeLongitude": 0.0, "rocketLatitude": 0.0,
-                        "rocketLongitude": 0.0, "northRad": 0.0, "azimuthRad": 0.0, "distanceM": 0.0,
+                        "rocketLongitude": 0.0, "northRad": 0.0, "pitchRad": 0.0, "rollRad": 0.0,
+                        "azimuthRad": 0.0, "distanceM": 0.0,
                         "elevationRad": 0.0, "ax": 0.0, "ay": 0.0, "az": 1.0, "gx": 0.0, "gy": 0.0,
                         "gz": 0.0, "mx": 0.0, "my": 0.0, "mz": 0.0, "calibrationPercentage": 0.0,
                         "calibrationState": 0, "updated": False},
-        "deviceStatus": {"batteryVoltage": 0.0, "usb": False, "freeStoragePercent": 100, "gnss": False,
+        "deviceStatus": {"batteryVoltage": 4.2, "usb": False, "freeStoragePercent": 100, "gnss": False,
                           "clockValid": False, "hour": 0, "minute": 0, "logging": False,
                           "recorderWriteFailure": False, "deleteFailure": False, "finalizeFailure": False,
                           "usbStorageState": "firmware"},
@@ -288,15 +290,24 @@ class Simulator:
         self.screen = "logo"
         self.testing_state = "disclaimer"
         self.calibration_state = "idle"
+        self.sensor_view = "readings"
         self.settings_state = "list"
         self.menu_selection = 0
         self.settings_page = 0
         self.settings_selection = -1
+        self.version_last_request = -1000
+        self.settings_versions = ["", ""]
+        self.version_replies = [None, None]
+        for link in self.state["links"]:
+            link.setdefault("firmwareVersion", "1.1.3")
         self.data_selection = 0
         self.data_statistics = False
         self.data_subview = "list"
         self.usb_storage_session = False
         self.usb_storage_message = ""
+        self.firmware_update_selection = 0
+        self.radio_update_state = "browse"
+        self.radio_update_started_ms = 0
         self.usb_previously_connected = False
         self.automatic_usb_share_pending = False
         self.previous_recorder_state = "idle"
@@ -312,6 +323,7 @@ class Simulator:
         self.participant_mask = 0
         self.touchdown_mask = 0
         self.recorder_armed = True
+        self.live_exit_state = "none"
         self.completed_participants = 0
         self.rearm_mask = 0
         self.keyboard_index = 0
@@ -368,6 +380,8 @@ class Simulator:
 
     def draw_intro_rocket(self, center_x: int, center_y: int, frame_number: int) -> None:
         def point(forward: int, sideways: int) -> tuple[int, int]:
+            forward = int(forward * 6 / 5)
+            sideways = int(sideways * 6 / 5)
             return (center_x + (5 * forward + 9 * sideways) // 10,
                     center_y + (-9 * forward + 5 * sideways) // 10)
 
@@ -383,9 +397,12 @@ class Simulator:
                            (point(-11, 7), point(-21, 16)), (point(-21, 16), point(-2, 8))):
             self.frame.line(*start, *end)
         wobble = 2 if frame_number % 2 == 0 else -2
-        self.frame.line(*point(-16, 0), *point(-34, wobble))
-        self.frame.line(*point(-16, 0), *point(-28, -5 - wobble))
-        self.frame.line(*point(-16, 0), *point(-27, 5 + wobble))
+        for sideways in range(-4, 5):
+            self.frame.line(*point(-15, sideways), *point(-38, wobble))
+        self.frame.line(*point(-15, -4), *point(-29, -7 - wobble))
+        self.frame.line(*point(-15, 4), *point(-28, 7 - wobble))
+        for sideways in range(-1, 2):
+            self.frame.line(*point(-17, sideways), *point(-29, wobble // 2), black=False)
 
     def render_intro(self) -> None:
         if not self.config().get("startupAnimation", True):
@@ -474,11 +491,18 @@ class Simulator:
                     self.render("Data", "Flight logs")
             self.frame.text(12, 82, f"Selection: {self.data_selection}")
         elif self.screen == "sensors":
-            self.render("Sensors", self.calibration_state)
+            self.render("Sensors", self.calibration_state if self.calibration_state != "idle" else self.sensor_view)
         elif self.screen == "settings":
             title = f"Settings page {self.settings_page}"
             self.render(title, self.settings_state)
             self.frame.text(12, 82, f"Selection: {self.settings_selection}")
+            if self.settings_page == 2 and self.settings_selection == 0:
+                self.frame.text(12, 182, "Ground Station: simulator")
+                self.frame.text(12, 202, "Telemetry 1: " + self.settings_versions[0])
+                self.frame.text(12, 222, "Telemetry 2: " + self.settings_versions[1])
+        elif self.screen == "self_test":
+            self.render("Factory self-test", "Open the WebAssembly simulator to run this test.")
+            self.frame.text(12, 82, "Back (B)")
         elif self.screen == "bootloader":
             self.render("Bootloader", "Bootloader request emitted")
         elif self.screen == "usb_storage":
@@ -489,6 +513,21 @@ class Simulator:
                 self.render("USB Drive", "Logs available on PC. Back (B). Disconnect (A).")
             else:
                 self.render("USB Drive", "Preparing USB drive...")
+        elif self.screen == "firmware_update":
+            target = "Ground Station" if self.firmware_update_selection == 0 else "Radio Receivers"
+            self.render("Update Firmware", target)
+        elif self.screen == "radio_update":
+            if self.radio_update_state == "browse":
+                self.render("Update GS Radios", "telemetry-1.2.0.bin")
+            elif self.radio_update_state == "confirm":
+                self.render("Confirm Radio Update", "Do not disconnect power")
+            elif self.radio_update_state == "complete":
+                self.render("Radio Update Complete", "Both radios verified. Back (B).")
+            else:
+                elapsed = self.now_ms - self.radio_update_started_ms
+                link = 1 if elapsed < 2000 else 2
+                percent = min(99, (elapsed % 2000) * 100 // 2000)
+                self.render("Updating GS Radios", f"Link {link} Writing {percent}%")
 
     def press(self, button: str) -> None:
         button = self.normalize_button(button)
@@ -531,6 +570,15 @@ class Simulator:
             self.tick(set())
 
     def tick(self, explicit_pressed: set[str]) -> None:
+        timed_out = self.now_ms >= 8000
+        request = not timed_out and self.now_ms - self.version_last_request >= 1000
+        for index in range(2):
+            self.settings_versions[index] = self.version_replies[index] or ("No response" if timed_out else "Reading...")
+            if self.version_replies[index] is None and request:
+                self.emit("version_requested", link=index + 1)
+                self.version_replies[index] = self.link(index)["firmwareVersion"] or None
+        if request:
+            self.version_last_request = self.now_ms
         for index in range(2):
             telemetry = self.link(index)["telemetry"]
             location = (float(telemetry.get("latitude", 0.0)), float(telemetry.get("longitude", 0.0)))
@@ -556,9 +604,16 @@ class Simulator:
         elif self.screen == "recovery":
             self.recovery_step(explicit_pressed)
         elif self.screen == "bootloader" and "back" in explicit_pressed:
+            self.firmware_update_selection = 0
+            self.screen = "firmware_update"
+        elif self.screen == "self_test" and "back" in explicit_pressed:
             self.screen = "settings"
         elif self.screen == "usb_storage":
             self.usb_storage_step(explicit_pressed)
+        elif self.screen == "firmware_update":
+            self.firmware_update_step(explicit_pressed)
+        elif self.screen == "radio_update":
+            self.radio_update_step(explicit_pressed)
         for name in explicit_pressed:
             if self.held.get(name):
                 self.last_repeat[name] = self.now_ms
@@ -571,11 +626,10 @@ class Simulator:
             if not telemetry.get("updated", False):
                 continue
             telemetry["updated"] = False
+            if self.screen != "live":
+                continue
             source_bit = 1 << index
             state = int(telemetry.get("state", 0))
-            if state > 2 and self.state["deviceStatus"].get("usbStorageState", "firmware") != "firmware":
-                self.state["deviceStatus"]["usbStorageState"] = "firmware"
-                self.emit("usb_storage_reclaimed_for_logging")
             if not self.recorder_armed:
                 if state <= 2:
                     self.rearm_mask |= source_bit
@@ -587,8 +641,11 @@ class Simulator:
                         self.completed_participants = 0
                         self.recorded_rows = 0
                 continue
-            if state <= 2:
+            if state <= 2 or (not self.active_filename and state >= 7):
                 continue
+            if self.state["deviceStatus"].get("usbStorageState", "firmware") != "firmware":
+                self.state["deviceStatus"]["usbStorageState"] = "firmware"
+                self.emit("usb_storage_reclaimed_for_logging")
             if self.state["deviceStatus"].get("recorderWriteFailure", False):
                 self.recorder_state = "fault"
                 continue
@@ -671,6 +728,7 @@ class Simulator:
         self.screen = "menu"
         self.testing_state = "disclaimer"
         self.calibration_state = "idle"
+        self.sensor_view = "readings"
         self.data_selection = 0
         self.data_statistics = False
         self.data_subview = "list"
@@ -692,6 +750,14 @@ class Simulator:
             self.emit("menu_selection", value=self.menu_selection)
         if "ok" in pressed or "center" in pressed:
             self.screen = MENU_SCREENS[self.menu_selection]
+            if self.screen == "live":
+                self.live_exit_state = "none"
+                self.recorder_armed = True
+                self.touchdown_mask = self.rearm_mask = self.completed_participants = 0
+                self.participant_mask = self.recorded_rows = self.dropped_rows = 0
+                self.recorder_state = "idle"
+            if self.screen == "sensors":
+                self.sensor_view = "readings"
             if self.screen == "data":
                 self.automatic_usb_share_pending = False
                 self.state["deviceStatus"]["usbStorageState"] = "firmware"
@@ -705,12 +771,33 @@ class Simulator:
             self.render_screen()
 
     def live_step(self, pressed: set[str]) -> None:
-        if "left" in pressed:
-            self.emit("live_view", text="gnss")
-        if "right" in pressed:
-            self.emit("live_view", text="downrange")
+        if self.live_exit_state == "stop_failed":
+            if "back" in pressed:
+                self.live_exit_state = "none"
+            return
+        if self.live_exit_state == "confirm":
+            if "back" in pressed:
+                self.live_exit_state = "none"
+            elif "ok" in pressed:
+                if self.active_filename and not self.finalize_recording():
+                    self.live_exit_state = "stop_failed"
+                else:
+                    self.recorder_state = "idle"
+                    self.automatic_usb_share_pending = bool(self.state["deviceStatus"].get("usb", False))
+                    self.to_menu()
+            return
         if "back" in pressed:
-            self.to_menu()
+            if self.active_filename:
+                self.live_exit_state = "confirm"
+            else:
+                self.recorder_state = "idle"
+                self.automatic_usb_share_pending = bool(self.state["deviceStatus"].get("usb", False))
+                self.to_menu()
+            return
+        if "right" in pressed:
+            self.emit("live_view", text="gnss")
+        if "left" in pressed:
+            self.emit("live_view", text="downrange")
 
     def recovery_step(self, pressed: set[str]) -> None:
         if self.config().get("dualReceiver", False):
@@ -893,6 +980,12 @@ class Simulator:
 
     def sensors_step(self, pressed: set[str]) -> None:
         if self.calibration_state == "idle":
+            if "right" in pressed or "down" in pressed:
+                self.sensor_view = "orientation"
+                self.emit("sensor_view", value=1, text="orientation")
+            if "left" in pressed or "up" in pressed:
+                self.sensor_view = "readings"
+                self.emit("sensor_view", value=0, text="readings")
             if "ok" in pressed:
                 self.calibration_state = "prepare"
             if "back" in pressed:
@@ -904,6 +997,7 @@ class Simulator:
                 self.emit("calibration_started")
             if "back" in pressed:
                 self.calibration_state = "idle"
+                self.sensor_view = "readings"
         elif self.calibration_state == "calibrating":
             if "back" in pressed:
                 self.calibration_state = "idle"
@@ -914,6 +1008,7 @@ class Simulator:
                 self.emit("calibration_completed")
         elif self.calibration_state == "concluded" and ({"ok", "back"} & pressed):
             self.calibration_state = "idle"
+            self.sensor_view = "readings"
             self.state["deviceStatus"]["usbStorageState"] = "firmware"
             self.automatic_usb_share_pending = bool(self.state["deviceStatus"].get("usb", False))
             self.emit("configuration_saved")
@@ -936,17 +1031,17 @@ class Simulator:
 
         if self.settings_selection < 0:
             if "right" in pressed:
-                self.settings_page = min(2, self.settings_page + 1)
+                self.settings_page = min(len(SETTING_COUNTS) - 1, self.settings_page + 1)
             if "left" in pressed:
                 self.settings_page = max(0, self.settings_page - 1)
         else:
             config = self.config()
             inc = "right" in pressed
             dec = "left" in pressed
-            if self.settings_page == 0 and self.settings_selection == 0:
+            if self.settings_page == 1 and self.settings_selection == 0:
                 if inc: config["neverStopLogging"] = True
                 if dec: config["neverStopLogging"] = False
-            elif self.settings_page == 0 and self.settings_selection == 2 and "ok" in pressed:
+            elif self.settings_page == 2 and self.settings_selection == 1 and "ok" in pressed:
                 self.usb_storage_message = ""
                 device = self.state["deviceStatus"]
                 if not device.get("usb", False):
@@ -963,23 +1058,24 @@ class Simulator:
                     self.emit("usb_storage_shared")
                 self.screen = "usb_storage"
                 return
-            elif self.settings_page == 0 and self.settings_selection == 3 and "ok" in pressed:
-                self.screen = "bootloader"
-                self.emit("bootloader_requested")
-            elif self.settings_page == 1 and self.settings_selection == 0:
+            elif self.settings_page == 2 and self.settings_selection == 3 and "ok" in pressed:
+                self.firmware_update_selection = 0
+                self.screen = "firmware_update"
+            elif self.settings_page == 0 and self.settings_selection == 0:
                 if inc: config["dualReceiver"] = True
                 if dec: config["dualReceiver"] = False
-            elif self.settings_page == 1 and 1 <= self.settings_selection <= 3 and "ok" in pressed:
+            elif self.settings_page == 0 and 1 <= self.settings_selection <= 3 and "ok" in pressed and (self.settings_selection != 2 or config["dualReceiver"]):
                 self.settings_state = "keyboard"
                 self.keyboard_index = 0
-            elif self.settings_page == 2 and self.settings_selection == 0:
+            elif self.settings_page == 1 and self.settings_selection == 1:
                 config["timeZoneOffset"] = max(-12, min(12, config.get("timeZoneOffset", 0) + (1 if inc else -1 if dec else 0)))
-            elif self.settings_page == 2 and self.settings_selection == 1 and (inc or dec):
+            elif self.settings_page == 1 and self.settings_selection == 2 and (inc or dec):
                 config["imperialUnits"] = not config.get("imperialUnits", False)
-            elif self.settings_page == 2 and self.settings_selection == 2:
+            elif self.settings_page == 1 and self.settings_selection == 3:
                 if inc: config["startupAnimation"] = True
                 if dec: config["startupAnimation"] = False
-
+            elif self.settings_page == 2 and self.settings_selection == 2 and "ok" in pressed:
+                self.screen = "self_test"
         if "down" in pressed:
             self.settings_selection = min(SETTING_COUNTS[self.settings_page] - 1, self.settings_selection + 1)
         if "up" in pressed:
@@ -993,29 +1089,68 @@ class Simulator:
                 self.emit("configuration_saved")
                 self.to_menu()
 
+    def firmware_update_step(self, pressed: set[str]) -> None:
+        if "down" in pressed:
+            self.firmware_update_selection = 1
+        if "up" in pressed:
+            self.firmware_update_selection = 0
+        if "back" in pressed:
+            self.screen = "settings"
+            self.settings_page = 2
+            self.settings_selection = 3
+            return
+        if "ok" not in pressed:
+            return
+        if self.firmware_update_selection == 0:
+            self.screen = "bootloader"
+            self.emit("bootloader_requested")
+            return
+        self.radio_update_state = "browse"
+        self.radio_update_started_ms = 0
+        self.screen = "radio_update"
+        self.emit("radio_update_browse")
+
+    def radio_update_step(self, pressed: set[str]) -> None:
+        if self.radio_update_state == "browse":
+            if "ok" in pressed:
+                self.radio_update_state = "confirm"
+            elif "back" in pressed:
+                self.firmware_update_selection = 1
+                self.screen = "firmware_update"
+        elif self.radio_update_state == "confirm":
+            if "back" in pressed:
+                self.radio_update_state = "browse"
+            elif "ok" in pressed:
+                self.radio_update_state = "updating"
+                self.radio_update_started_ms = self.now_ms
+                self.emit("radio_update_started")
+        elif self.radio_update_state == "updating":
+            if self.now_ms - self.radio_update_started_ms >= 4000:
+                self.radio_update_state = "complete"
+                self.emit("radio_update_complete")
+        elif self.radio_update_state == "complete" and "back" in pressed:
+            self.radio_update_state = "browse"
+            self.radio_update_started_ms = 0
+            self.firmware_update_selection = 1
+            self.screen = "firmware_update"
+
     def usb_storage_step(self, pressed: set[str]) -> None:
         storage_state = self.state["deviceStatus"].get("usbStorageState", "firmware")
         if self.usb_storage_session and storage_state == "firmware":
             self.usb_storage_session = False
             self.emit("usb_storage_reclaimed")
             self.screen = "settings"
-            self.settings_page = 0
-            self.settings_selection = 2
         elif self.usb_storage_session and storage_state == "fault":
             self.usb_storage_session = False
             self.usb_storage_message = "Storage could not be remounted."
         elif self.usb_storage_session and storage_state == "host" and "back" in pressed:
             self.usb_storage_session = False
             self.screen = "settings"
-            self.settings_page = 0
-            self.settings_selection = 2
         elif self.usb_storage_session and ((storage_state == "host" and "ok" in pressed) or
                                            (storage_state == "preparing" and "back" in pressed)):
             self.state["deviceStatus"]["usbStorageState"] = "firmware"
         elif not self.usb_storage_session and "back" in pressed:
             self.screen = "settings"
-            self.settings_page = 0
-            self.settings_selection = 2
 
     def set_value(self, path: str, value: Any) -> None:
         path = canonical_path(path)
@@ -1166,15 +1301,25 @@ class Simulator:
             azimuth = math.atan2(dx, dy)
         return {
             "activeScreen": self.screen,
+            "firmwareUpdateSelection": self.firmware_update_selection,
+            "radioUpdateState": self.radio_update_state,
+            "radioUpdateLink": (1 if self.now_ms - self.radio_update_started_ms < 2000 else 2)
+            if self.radio_update_state == "updating" else (2 if self.radio_update_state == "complete" else 0),
+            "radioUpdatePercent": min(99, ((self.now_ms - self.radio_update_started_ms) % 2000) * 100 // 2000)
+            if self.radio_update_state == "updating" else (100 if self.radio_update_state == "complete" else 0),
             "testingState": self.testing_state,
             "calibrationState": self.calibration_state,
+            "sensorView": self.sensor_view,
             "settingsState": self.settings_state,
+            "telemetryVersion1": self.settings_versions[0],
+            "telemetryVersion2": self.settings_versions[1],
             "inputState": "held" if any(self.held.values()) else "idle",
             "menuSelection": self.menu_selection,
             "settingsPage": self.settings_page,
             "settingsSelection": self.settings_selection,
             "dataSelection": self.data_selection,
             "dataStatistics": self.data_statistics,
+            "liveExitState": self.live_exit_state,
             "currentDataSubview": self.data_subview,
             "logCount": len(logs),
             "logScrollOffset": self.log_scroll_offset,
@@ -1267,6 +1412,127 @@ class Simulator:
         return snapshots
 
 
+def load_fixture_manifest(path: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        fail(f"fixture manifest {path}:{error.lineno}:{error.colno}: invalid JSON: {error.msg}")
+    except OSError as error:
+        fail(f"cannot read fixture manifest '{path}': {error}")
+    fixtures = manifest.get("fixtures") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1 or not isinstance(fixtures, list):
+        fail(f"fixture manifest {path}: unsupported schema")
+    ids = [fixture.get("id") for fixture in fixtures if isinstance(fixture, dict)]
+    if len(ids) != len(fixtures) or any(not isinstance(identifier, str) or not identifier for identifier in ids):
+        fail(f"fixture manifest {path}: every fixture needs an id")
+    if len(set(ids)) != len(ids):
+        fail(f"fixture manifest {path}: fixture ids must be unique")
+    return manifest
+
+
+def complete_fixture_log(name: str, offset: int, spec: dict[str, Any]) -> dict[str, str]:
+    rows = []
+    for link in (1, 2):
+        latitude = int(spec["baseLatitudeE4"]) + offset + link * 5
+        longitude = int(spec["baseLongitudeE4"]) + offset + link * 5
+        rows.extend((
+            f"{link},10,3,0,{latitude},{longitude},100,30,42,1,1",
+            f"{link},20,5,0,{latitude},{longitude},1000,0,41,1,1",
+            f"{link},30,6,0,{latitude},{longitude},400,-25,40,1,1",
+            f"{link},50,7,0,{latitude},{longitude},5,0,39,1,1",
+        ))
+    return {"name": name, "csv": CSV_HEADER + "\n".join(rows) + "\n"}
+
+
+def resolve_fixture_logs(spec: Any, base_dir: Path, light_mode: bool) -> list[dict[str, Any]]:
+    if isinstance(spec, list):
+        return copy.deepcopy(spec)
+    if not isinstance(spec, dict):
+        fail("fixture logs must be an array or object")
+    if "files" in spec:
+        files = spec.get("lightFiles") if light_mode and spec.get("lightFiles") else spec["files"]
+        logs = []
+        for filename in files:
+            path = base_dir / str(filename)
+            try:
+                logs.append({"name": path.name, "csv": path.read_text(encoding="utf-8")})
+            except OSError as error:
+                fail(f"cannot read fixture log '{path}': {error}")
+        return logs
+    if "generated" in spec:
+        generated = spec["generated"]
+        if not isinstance(generated, dict):
+            fail("fixture generated logs must be an object")
+        count = int(generated["count"])
+        start_index = int(generated["startIndex"])
+        return [complete_fixture_log(f"log_{start_index - offset:03d}.csv", offset, generated)
+                for offset in range(count)]
+    if "entries" in spec:
+        return [{"name": entry["name"], "csv": CSV_HEADER + "\n".join(entry["rows"]) + "\n"}
+                for entry in spec["entries"]]
+    fail("fixture logs need files, generated, or entries")
+
+
+def apply_fixture_to_simulator(sim: Simulator, fixture: dict[str, Any], base_dir: Path,
+                               light_mode: bool = False) -> None:
+    operations = fixture.get("operations")
+    if not isinstance(operations, list):
+        fail(f"fixture {fixture.get('id', '<unknown>')}: operations must be an array")
+    for index, step in enumerate(operations, 1):
+        if not isinstance(step, dict) or len(step) != 1:
+            fail(f"fixture {fixture.get('id', '<unknown>')} step {index}: expected one operation")
+        operation, value = next(iter(step.items()))
+        if operation == "logs":
+            sim.set_initial({"logs": resolve_fixture_logs(value, base_dir, light_mode)})
+        elif operation in ("configuration", "navigation", "deviceStatus"):
+            if not isinstance(value, dict):
+                fail(f"fixture {fixture.get('id', '<unknown>')} step {index}: {operation} must be an object")
+            sim.set_initial({operation: value})
+            if operation == "navigation":
+                sim.advance(0)
+        elif operation == "link":
+            if not isinstance(value, dict) or value.get("index") not in (1, 2) or not isinstance(value.get("value"), dict):
+                fail(f"fixture {fixture.get('id', '<unknown>')} step {index}: link must have index and value")
+            link = sim.link(int(value["index"]) - 1)
+            payload = value["value"]
+            for field in ("connected", "enabled"):
+                if field in payload:
+                    link[field] = payload[field]
+            for field in ("state", "errors", "altitudeM", "velocityMps", "latitude", "longitude", "voltage",
+                          "pyroContinuity", "testingMode", "timestampDs", "lastUpdateMs", "updated"):
+                if field in payload:
+                    link["telemetry"][field] = payload[field]
+            for field in ("linkQuality", "rssi", "snr"):
+                if field in payload:
+                    link["info"][field] = payload[field]
+            link["telemetry"]["updated"] = True
+            link["info"]["updated"] = True
+            sim.advance(0)
+        elif operation == "tap":
+            sim.press(str(value))
+            sim.release(str(value))
+        elif operation == "hold":
+            if not isinstance(value, dict):
+                fail(f"fixture {fixture.get('id', '<unknown>')} step {index}: hold must be an object")
+            sim.hold(str(value.get("button", "")), int(value.get("ms", 0)))
+        elif operation == "advance":
+            sim.advance(int(value))
+        else:
+            fail(f"fixture {fixture.get('id', '<unknown>')} step {index}: unknown operation '{operation}'")
+    if light_mode and fixture.get("lightAdvanceMs"):
+        sim.advance(int(fixture["lightAdvanceMs"]))
+
+
+def run_fixture(manifest_path: Path, fixture_id: str, light_mode: bool = False) -> dict[str, Any]:
+    manifest = load_fixture_manifest(manifest_path)
+    fixture = next((item for item in manifest["fixtures"] if item["id"] == fixture_id), None)
+    if fixture is None:
+        fail(f"unknown simulator fixture '{fixture_id}'")
+    sim = Simulator(ready=not light_mode, base_dir=manifest_path.parent)
+    apply_fixture_to_simulator(sim, fixture, manifest_path.parent, light_mode)
+    return {"fixture": fixture_id, "snapshot": sim.snapshot(), "ok": True}
+
+
 def run_scenario(path: Path, write_snapshots: bool = False) -> dict[str, Any]:
     try:
         scenario = json.loads(path.read_text(encoding="utf-8"))
@@ -1301,11 +1567,11 @@ def deterministic_test(root: Path) -> int:
     except (OSError, json.JSONDecodeError) as error:
         print(f"cannot load golden snapshot manifest {golden_path}: {error}", file=sys.stderr)
         return 1
-    for scenario_name in ("startup-intro.json", "startup-static.json", "menu.json", "testing-timeout.json",
-                          "settings.json", "replay.json",
+    for scenario_name in ("startup-intro.json", "startup-static.json", "menu.json", "live.json", "testing-timeout.json",
+                          "sensors.json", "sensors-orientation.json", "settings.json", "settings-versions.json", "bootloader.json", "replay.json",
                           "qr-recovery.json", "qr-data.json", "qr-no-fix.json", "qr-zero-coordinate.json",
-                          "recording-independent.json", "recording-modes.json", "log-management.json",
-                          "legacy-log-names.json", "usb-storage.json"):
+                          "recording-live-only.json", "recording-modes.json", "log-management.json",
+                          "legacy-log-names.json", "usb-storage.json", "radio-update.json"):
         scenario_path = scenario_dir / scenario_name
         if scenario_path.exists():
             try:
@@ -1313,6 +1579,13 @@ def deterministic_test(root: Path) -> int:
             except (OSError, json.JSONDecodeError) as error:
                 print(f"cannot load simulator fixture {scenario_path}: {error}", file=sys.stderr)
                 return 1
+
+    fixture_manifest_path = scenario_dir.parent / "web" / "fixtures.json"
+    try:
+        fixture_manifest = load_fixture_manifest(fixture_manifest_path)
+    except ScenarioError as error:
+        print(f"cannot load shared simulator fixtures: {error}", file=sys.stderr)
+        return 1
 
     for name, case in cases:
         first_initial = copy.deepcopy(case["initial"])
@@ -1346,7 +1619,27 @@ def deterministic_test(root: Path) -> int:
                     print(f"golden snapshot failed: {name}/{snapshot_name}: expected {snapshot_hash}, "
                           f"got {actual_snapshots.get(snapshot_name)}", file=sys.stderr)
                     return 1
+    for fixture in fixture_manifest["fixtures"]:
+        try:
+            first = Simulator(base_dir=fixture_manifest_path.parent)
+            apply_fixture_to_simulator(first, fixture, fixture_manifest_path.parent)
+            second = Simulator(base_dir=fixture_manifest_path.parent)
+            apply_fixture_to_simulator(second, fixture, fixture_manifest_path.parent)
+        except ScenarioError as error:
+            print(f"shared fixture failed: {fixture['id']}: {error}", file=sys.stderr)
+            return 1
+        if (json.dumps(first.snapshot(), sort_keys=True) != json.dumps(second.snapshot(), sort_keys=True)
+                or first.frame.png() != second.frame.png()):
+            print(f"shared fixture determinism failed: {fixture['id']}", file=sys.stderr)
+            return 1
+    light_demo = run_fixture(fixture_manifest_path, "light-demo", light_mode=True)["snapshot"]
+    if (light_demo["activeScreen"] != "menu" or light_demo["logCount"] != 1
+            or light_demo["navigation"]["homeLatitude"] != 39.3899
+            or light_demo["navigation"]["homeLongitude"] != -8.2895):
+        print("shared light demo fixture failed", file=sys.stderr)
+        return 1
     print(f"gs-sim: {len(cases)} deterministic controller/scenario tests passed")
+    print(f"fixtures: {len(fixture_manifest['fixtures'])} browser/CLI fixtures passed")
     print(f"framebuffer: {len(first.frame.packed())} bytes, sha256={a['framebufferSha256']}")
     return 0
 
@@ -1357,12 +1650,21 @@ def main(argv: list[str]) -> int:
     run = sub.add_parser("run")
     run.add_argument("scenario", type=Path)
     run.add_argument("--write-snapshots", action="store_true")
+    fixture = sub.add_parser("fixture")
+    fixture.add_argument("fixture_id")
+    fixture.add_argument("--manifest", type=Path,
+                         default=Path(__file__).resolve().parent / "web" / "fixtures.json")
+    fixture.add_argument("--light", action="store_true")
     test = sub.add_parser("test")
     test.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
     try:
         if args.command == "test":
             return deterministic_test(args.root)
+        if args.command == "fixture":
+            result = run_fixture(args.manifest.resolve(), args.fixture_id, args.light)
+            print(json.dumps(result, sort_keys=True, indent=2))
+            return 0
         result = run_scenario(args.scenario.resolve(), args.write_snapshots)
         print(json.dumps(result, sort_keys=True, indent=2))
         return 0

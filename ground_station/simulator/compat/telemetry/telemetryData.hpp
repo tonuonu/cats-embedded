@@ -5,7 +5,7 @@
 class TelemetryData {
  public:
   void set(uint8_t state, uint8_t errors, int32_t altitude, int16_t velocity, float latitude, float longitude,
-           float voltage, uint8_t continuity, bool testingMode) {
+           float voltage, uint8_t continuity, bool testingMode, uint32_t lastUpdateTime = 0, uint16_t timestamp = 0) {
     state_ = state;
     errors_ = errors;
     altitude_ = altitude;
@@ -15,11 +15,14 @@ class TelemetryData {
     voltage_ = voltage;
     continuity_ = continuity;
     testingMode_ = testingMode;
+    lastUpdateTime_ = lastUpdateTime;
+    timestamp_ = timestamp;
     updated_ = true;
   }
   void clear() { updated_ = false; }
   [[nodiscard]] bool isUpdated() const { return updated_; }
   int16_t velocity() { updated_ = false; return velocity_; }
+  uint16_t ts() { updated_ = false; return timestamp_; }
   int32_t altitude() { updated_ = false; return altitude_; }
   float lat() { updated_ = false; return latitude_; }
   float lon() { updated_ = false; return longitude_; }
@@ -28,6 +31,8 @@ class TelemetryData {
   float voltage() { updated_ = false; return voltage_; }
   uint8_t pyroContinuity() { updated_ = false; return continuity_; }
   bool testingMode() { updated_ = false; return testingMode_; }
+  [[nodiscard]] uint32_t getLastUpdateTime() const { return lastUpdateTime_; }
+  [[nodiscard]] uint32_t getLastUpdateTimeMs() const { return lastUpdateTime_; }
 
  private:
   uint8_t state_ = 2;
@@ -40,6 +45,8 @@ class TelemetryData {
   uint8_t continuity_ = 0;
   bool testingMode_ = false;
   bool updated_ = false;
+  uint32_t lastUpdateTime_ = 0;
+  uint16_t timestamp_ = 0;
 };
 
 class TelemetryInfo {

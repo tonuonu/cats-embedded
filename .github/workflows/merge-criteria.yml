@@ -49,17 +49,20 @@ jobs:
           if [[ -n "$is_manual_trigger" || "${GITHUB_REF}" == "refs/heads/main" || $contains_dot -gt 0 || $contains_dotgithub -gt 0 ]]; then
             filtered_array='["flight_computer","ground_station","telemetry"]'
           else
-            filtered_array='${{ steps.changed-files.outputs.all_changed_files }}'
+            filtered_array=$(echo '${{ steps.changed-files.outputs.all_changed_files }}' | jq -c '[.[] | select(. == "flight_computer" or . == "ground_station" or . == "telemetry")]')
           fi
 
           echo "$filtered_array"
           echo "matrix=$filtered_array" >> "$GITHUB_OUTPUT"
+          has_projects=$(echo "$filtered_array" | jq -r 'length > 0')
+          echo "has_projects=$has_projects" >> "$GITHUB_OUTPUT"
 
     outputs:
       matrix: ${{ steps.changed-files-filtered.outputs.matrix }}
+      has_projects: ${{ steps.changed-files-filtered.outputs.has_projects }}
 
   format_check:
-    if: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
+    if: ${{ needs.generate_matrix.outputs.has_projects == 'true' }}
     name: Format Check
     needs: generate_matrix
     strategy:
@@ -80,7 +83,7 @@ jobs:
         exclude-regex: '(lib|telemetry/src/st)'
 
   build_lint:
-    if: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
+    if: ${{ needs.generate_matrix.outputs.has_projects == 'true' }}
     needs: [generate_matrix, format_check]
     name: '[Ubuntu] Build + Lint'
     # We are linting on Ubuntu because the linter seems to work better on Linux
@@ -162,7 +165,7 @@ jobs:
           retention-days: 90
 
   build_upload:
-    if: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
+    if: ${{ needs.generate_matrix.outputs.has_projects == 'true' }}
     needs: [generate_matrix, format_check]
     name: '[Windows] Build + Upload'
     # We are running this on windows because the users get binaries compiled on windows.
@@ -212,14 +215,43 @@ jobs:
         shell: pwsh
         run: platformio run -d ${{ matrix.project }} --target compiledb
 
+      - name: Package versioned firmware
+        id: package
+        shell: python
+        working-directory: ./${{ matrix.project }}
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          from platformio.project.config import ProjectConfig
+
+          project = os.environ["PROJECT"]
+          config = ProjectConfig("platformio.ini")
+          environment, = config.get("platformio", "default_envs") or list(config.envs())
+          flags = " ".join(config.get(f"env:{environment}", "build_flags"))
+          match = re.search(r'''(?:^|\s)-D\s*FIRMWARE_VERSION=['"]*([0-9A-Za-z.+-]+)['"]*(?=\s|$)''', flags)
+          if not match:
+              raise RuntimeError(f"Missing FIRMWARE_VERSION for {project}/{environment}")
+
+          name = f"{project}-{match.group(1)}"
+          build = Path(config.get("platformio", "build_dir")) / environment
+          destination = Path(os.environ["RUNNER_TEMP"]) / name
+          destination.mkdir(parents=True, exist_ok=True)
+          extensions = ["bin", "elf"] + (["UF2"] if project == "ground_station" else [])
+          for extension in extensions:
+              shutil.copy2(build / f"firmware.{extension}", destination / f"{name}.{extension}")
+          shutil.copy2(build / "compile_commands.json", destination / "compile_commands.json")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"name={name}\npath={destination.as_posix()}\n")
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: artifacts_${{ matrix.project }}
-          path: |
-            ./${{ matrix.project }}/.pio/build/**/firmware.UF2
-            ./${{ matrix.project }}/.pio/build/**/firmware.bin
-            ./${{ matrix.project }}/.pio/build/**/firmware.elf
-            ./${{ matrix.project }}/.pio/build/**/compile_commands.json
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.path }}
           if-no-files-found: error
           retention-days: 90

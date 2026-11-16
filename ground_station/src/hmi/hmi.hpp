@@ -8,6 +8,7 @@
 #include "clock.hpp"
 #include "config.hpp"
 #include "logging/recorder.hpp"
+#include "update/radio_firmware_updater.hpp"
 #include "window.hpp"
 
 #include <vector>
@@ -18,20 +19,29 @@ class Hmi {
       : recorder(dir),
         upButton(kUpButtonPin, kButtonDebounceMs),
         downButton(kDownButtonPin, kButtonDebounceMs),
-        leftButton(2, kButtonDebounceMs),
-        rightButton(5, kButtonDebounceMs),
+        leftButton(kLeftButtonPin, kButtonDebounceMs),
+        rightButton(kRightButtonPin, kButtonDebounceMs),
         centerButton(1, kButtonDebounceMs),
         okButton(7, kButtonDebounceMs),
-        backButton(6, kButtonDebounceMs),
+        backButton(kBackButtonPin, kButtonDebounceMs),
         window(display, systemConfig, clock) {}
 
   void begin();
+  ReceiverTelemetryMode_e receiverMode() const {
+    const int8_t mode = selfTestMode.load();
+    return mode < 0 ? systemConfig.config.receiverMode : (mode == 0 ? SINGLE : DUAL);
+  }
+  void noteCombinedTelemetry() { ++combinedTelemetryPackets; }
 
  private:
   static constexpr uint8_t kUpButtonPin = 3;
   static constexpr uint8_t kDownButtonPin = 4;
+  static constexpr uint8_t kLeftButtonPin = 2;
+  static constexpr uint8_t kRightButtonPin = 5;
+  static constexpr uint8_t kBackButtonPin = 6;
   static constexpr uint32_t kButtonDebounceMs = 15;
   static constexpr uint32_t kSensorRefreshIntervalMs = 200;
+  static constexpr uint32_t kLiveRefreshIntervalMs = 200;
 
   enum State {
     MENU = 0,
@@ -42,6 +52,9 @@ class Hmi {
     SENSORS = 5,
     SETTINGS = 6,
     USB_STORAGE = 7,
+    SELF_TEST = 8,
+    FIRMWARE_UPDATE = 9,
+    RADIO_UPDATE = 10,
   };
 
   enum TestingState {
@@ -60,6 +73,8 @@ class Hmi {
     CONCLUDED = 3,
   };
 
+  enum class SensorView : uint8_t { Readings, Orientation };
+
   State state = MENU;
 
   TestingState testingState = DISCLAIMER;
@@ -67,9 +82,14 @@ class Hmi {
   int16_t testingIndex = 0;
 
   CalibrationState calibrationState = IDLE;
+  SensorView sensorView = SensorView::Readings;
   uint32_t lastSensorRefresh = 0;
+  uint32_t lastLiveRefresh = 0;
+  enum class LiveExitState : uint8_t { None, Confirm, StartFailed, StopFailed };
+  LiveExitState liveExitState{LiveExitState::None};
 
   Recorder recorder;
+  RadioUpdate::RadioFirmwareUpdater* radioUpdater{nullptr};
 
   uint16_t oldTimeStamp = 0;
 
@@ -84,6 +104,7 @@ class Hmi {
   void menu();
   void initLive();
   void live();
+  bool liveButtonPending() const;
   void initRecovery();
   void recovery();
   void updateRecoveryLocations();
@@ -100,10 +121,32 @@ class Hmi {
   void sensors();
   void initSettings();
   void settings();
+  void updateSettingVersions();
+  bool versionsSelected{false};
+  char displayedVersions[2][17]{};
   void initUsbStorage();
   void usbStorage();
+  void initFirmwareUpdate();
+  void firmwareUpdate();
+  void initRadioUpdate();
+  void radioUpdate();
+  void drawRadioUpdateList(const RadioUpdate::Snapshot& snapshot);
   void updateAutomaticUsbStorage(const RecorderStatus& recorderStatus);
   bool claimStorageForFirmware();
+  void initSelfTest();
+  void startSelfTest();
+  void selfTestStep();
+  SelfTestInput selfTestInput();
+  void applySelfTestRadio(SelfTest::RadioConfiguration configuration);
+  bool testStorage();
+  void leaveSelfTest();
+  SelfTest selfTest{};
+  std::atomic<int8_t> selfTestMode{-1};
+  std::atomic<uint32_t> combinedTelemetryPackets{0};
+  uint32_t selfTestLastDraw{0};
+  uint32_t selfTestBackSince{0};
+  int16_t selfTestResultIndex{0};
+  bool selfTestControlsOk{true};
 
   bool initialized = false;
   bool isLogging = false;
@@ -152,4 +195,9 @@ class Hmi {
   bool usbPreviouslyConnected = false;
   bool automaticUsbSharePending = false;
   uint32_t lastAutomaticUsbShareAttempt = 0;
+  uint32_t radioUpdateRevision = UINT32_MAX;
+  int16_t firmwareUpdateIndex = 0;
+  size_t radioUpdateIndex = 0;
+  size_t radioUpdateWindowStart = 0;
+  bool leaveRadioUpdate = false;
 };

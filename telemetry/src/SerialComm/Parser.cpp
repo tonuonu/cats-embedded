@@ -140,8 +140,12 @@ void Parser::cmdVersionNum([[maybe_unused]] uint8_t *args, [[maybe_unused]] uint
   send_version_num = true;
 }
 
-void Parser::cmdBootloader(uint8_t *args, uint32_t length) {
-  // UNUSED
+void Parser::cmdBootloader([[maybe_unused]] uint8_t *args, uint32_t length) {
+  if (length != 0) {
+    return;
+  }
+
+  bootloader_requested = true;
 }
 
 void Parser::cmdRX(uint8_t *args, uint32_t length) {

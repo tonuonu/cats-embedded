@@ -4,16 +4,18 @@
 
 #pragma once
 
+#include "attitude.hpp"
 #include "console.hpp"
+#include "self_test.hpp"
 #include "utils.hpp"
 
 // clang-format off
 #include <LSM6DS3.h>
-#include <MadgwickAHRS.h>
 #include <QMC5883Compass.hpp>
 #include <Wire.h>
 // clang-format on
 
+#include <atomic>
 #include <cmath>
 #include <memory>
 
@@ -50,6 +52,9 @@ class EarthPoint3D {
 class Navigation {
  public:
   bool begin();
+  void enableSelfTestSampling(bool enabled) { selfTestSampling = enabled; }
+  SelfTestSensorObservation selfTestSensors() const;
+  bool saveGyroCalibration(const std::array<float, 3> &bias);
 
   void setPointA(EarthPoint3D point) { pointA = point; }
   void setPointA(float lat, float lon, float height = 0) { pointA = EarthPoint3D(lat, lon, height); }
@@ -63,17 +68,17 @@ class Navigation {
 
   inline float getNorth() {
     updated = false;
-    return filter.getYawRadians();
+    return getAttitude().north;
   }
 
   inline float getPitch() {
     updated = false;
-    return filter.getPitchRadians();
+    return getAttitude().pitch;
   }
 
   inline float getRoll() {
     updated = false;
-    return filter.getRollRadians();
+    return getAttitude().roll;
   }
 
   inline float getGX() const { return gx; }
@@ -113,7 +118,7 @@ class Navigation {
     return elevation;
   }
 
-  inline float computeBearing() { return (azimuth + filter.getYawRadians() - PI_F / 2) / (2 * PI_F / 360); }
+  inline float computeBearing() { return (azimuth + getAttitude().north - PI_F / 2) / (2 * PI_F / 360); }
 
   struct mag_calibration_t {
     float offset[3];
@@ -142,6 +147,13 @@ class Navigation {
 
  private:
   bool initialized = false;
+  std::atomic<bool> selfTestSampling{false};
+  bool imuDetected{false};
+  mutable portMUX_TYPE sensorMux = portMUX_INITIALIZER_UNLOCKED;
+  SelfTestSensorObservation sensorObservation{};
+  std::array<float, 3> gyroBias{};  // Degrees/s, protected by sensorMux.
+  bool resetAttitude = false;       // Protected by sensorMux, consumed by navigation task.
+  Attitude attitude{};              // Published by navigation task under sensorMux.
   bool updated = false;
   calibration_state_e calibration = INV_CALIB;
 
@@ -151,7 +163,7 @@ class Navigation {
   std::unique_ptr<QMC5883Compass> compass;
   LSM6DS3Class imu;
 
-  Madgwick filter;
+  AttitudeFilter filter;
 
   float gx, gy, gz, ax, ay, az;
   float m[3];
@@ -161,8 +173,6 @@ class Navigation {
   float sphere_points[n_points][3];
   bool sphere_checked[n_points];
   float calibration_progress = 0;
-
-  float q0, q1, q2, q3;
 
   float dist = 0;
   float azimuth = 0;
@@ -183,6 +193,7 @@ class Navigation {
                                  .min_vals_scal = {100, 100, 100}};
 
   static void navigationTask(void *pvParameter);
+  Attitude getAttitude() const;
   void calculateDistanceDirection();
   void initFibonacciSphere();
   void calibrate(const float *val);

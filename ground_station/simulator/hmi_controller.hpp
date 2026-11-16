@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "hmi/startup_intro.hpp"
+#include "self_test.hpp"
 
 #include "clock.hpp"
 
@@ -43,6 +44,8 @@ struct LinkSnapshot {
   LinkInfoSnapshot info;
   bool enabled = true;
   bool connected = false;
+  std::string firmwareVersion;
+  uint32_t versionReplies = 0;
 };
 
 struct NavigationSnapshot {
@@ -51,6 +54,8 @@ struct NavigationSnapshot {
   float rocketLatitude = 0.0F;
   float rocketLongitude = 0.0F;
   float northRad = 0.0F;
+  float pitchRad = 0.0F;
+  float rollRad = 0.0F;
   float azimuthRad = 0.0F;
   float distanceM = 0.0F;
   float elevationRad = 0.0F;
@@ -69,7 +74,7 @@ struct NavigationSnapshot {
 };
 
 struct DeviceStatusSnapshot {
-  float batteryVoltage = 0.0F;
+  float batteryVoltage = 4.2F;
   bool usb = false;
   uint32_t freeStoragePercent = 100;
   bool gnss = false;
@@ -79,6 +84,16 @@ struct DeviceStatusSnapshot {
   bool logging = false;
   bool recorderFault = false;
   std::string usbStorageState = "firmware";
+  uint8_t selfTestMissingReceiver = 0;
+  bool selfTestGnss = true;
+  bool selfTestSensorFailure = false;
+  bool selfTestStorageFailure = false;
+  uint8_t selfTestLq = 90;
+  int8_t selfTestSnr = 10;
+  bool selfTestGyroSaveFailure = false;
+  std::array<float, 3> gyroBias{};
+  uint32_t gyroSaveCount = 0;
+  uint32_t usbReadCount = 0;
 };
 
 struct GsConfigSnapshot {
@@ -164,6 +179,7 @@ class ITelemetryLink {
   virtual void disable() = 0;
   virtual void setLinkPhrase(const std::string& phrase) = 0;
   virtual void setTestingPhrase(const std::string& phrase) = 0;
+  virtual void requestVersion() = 0;
 };
 
 class INavigation {
@@ -183,6 +199,8 @@ class ILogStore {
   virtual void configure(bool dual, bool neverStop) = 0;
   virtual void record(const TelemetrySample& sample, uint8_t link) = 0;
   virtual bool finalize() = 0;
+  virtual bool startLiveRecording() = 0;
+  virtual bool stopLiveRecording(bool onlyIfIdle = false, bool* needsConfirmation = nullptr) = 0;
   virtual bool remove(const std::string& name) = 0;
 };
 
@@ -200,6 +218,7 @@ class IDeviceStatus {
   [[nodiscard]] virtual DeviceStatusSnapshot snapshot() const = 0;
   virtual bool requestMassStorage() = 0;
   virtual void requestFirmwareStorage() = 0;
+  virtual bool saveGyroCalibration(const std::array<float, 3>& bias) = 0;
 };
 
 struct HmiSnapshot {
@@ -207,8 +226,11 @@ struct HmiSnapshot {
   std::string testingState = "disclaimer";
   std::string calibrationState = "idle";
   std::string settingsState = "list";
+  std::array<std::string, 2> settingsVersions{};
   std::string inputState = "idle";
-  std::string liveView = "gnss";
+  std::string liveView = "downrange";
+  std::string liveExitState = "none";
+  std::string sensorView = "readings";
   int16_t menuSelection = 0;
   int16_t testingSelection = 0;
   int16_t keyboardSelection = 0;
@@ -223,6 +245,12 @@ struct HmiSnapshot {
   std::string dataMessageTitle;
   std::string dataMessageText;
   std::string usbStorageMessage;
+  int16_t firmwareUpdateSelection = 0;
+  std::string radioUpdateState = "browse";
+  std::vector<std::string> radioFirmware{"telemetry-1.2.0.bin"};
+  int16_t radioFirmwareSelection = 0;
+  uint8_t radioUpdateLink = 0;
+  uint8_t radioUpdatePercent = 0;
   std::string qrView = "none";
   std::string qrUrl;
   uint64_t virtualTimeMs = 0;
@@ -240,6 +268,8 @@ struct HmiSnapshot {
   RecoverySolutionSnapshot recoverySolution;
   std::vector<PlatformAction> actions;
   uint32_t framebufferRevision = 0;
+  SelfTest selfTest;
+  int16_t selfTestResultIndex = 0;
 };
 
 class IHmiRenderer {
@@ -262,12 +292,27 @@ class HmiController {
   void clearActions() { actions_.clear(); }
 
  private:
-  enum class Screen : uint8_t { Logo, Menu, Live, Recovery, Testing, Data, Sensors, Settings, Bootloader, UsbStorage };
+  enum class Screen : uint8_t {
+    Logo,
+    Menu,
+    Live,
+    Recovery,
+    Testing,
+    Data,
+    Sensors,
+    Settings,
+    Bootloader,
+    UsbStorage,
+    SelfTest,
+    FirmwareUpdate,
+    RadioUpdate
+  };
   enum class TestingState : uint8_t { Disclaimer, CanStart, CannotStart, Waiting, Failed, Started, ConfirmEvent };
   enum class CalibrationState : uint8_t { Idle, Prepare, Calibrating, Concluded };
   enum class DataSubview : uint8_t { List, Details, Options, ConfirmFinalize, ConfirmDelete, Message };
 
   static constexpr uint64_t kTestingTimeoutMs = 10000;
+  static constexpr uint64_t kRadioUpdateLinkDurationMs = 2000;
   static constexpr uint64_t kLongPressMs = 500;
   static constexpr size_t kKeyboardMaxLength = 16;
 
@@ -283,6 +328,10 @@ class HmiController {
   void dataStep(uint64_t nowMs);
   void sensorsStep(uint64_t nowMs);
   void settingsStep(uint64_t nowMs);
+  void selfTestStep(uint64_t nowMs);
+  void selfTestRadio(SelfTest::RadioConfiguration configuration);
+  void firmwareUpdateStep();
+  void radioUpdateStep();
   void updateRecoveryLocations();
   bool showRecoveryLocation(size_t linkIndex);
   void emit(const char* type, uint8_t link = 0, int32_t value = 0, const std::string& text = {});
@@ -328,12 +377,27 @@ class HmiController {
   std::string qrUrl_;
   std::array<FlightStatisticsSnapshot, 2> recoveryLocations_{};
   int8_t selectedRecoveryLink_ = 0;
-  bool liveDownrange_ = false;
+  bool liveDownrange_ = true;
+  std::string liveExitState_ = "none";
+  bool sensorOrientation_ = false;
   bool keyboardActive_ = false;
+  uint64_t versionLastRequest_ = 0;
+  std::array<bool, 2> versionReadsComplete_{};
+  std::array<std::string, 2> settingsVersions_{};
   int16_t keyboardSelection_ = 0;
   bool keyboardUppercase_ = false;
   bool usbStorageSession_ = false;
   bool usbPreviouslyConnected_ = false;
   bool automaticUsbSharePending_ = false;
   std::string previousRecorderState_ = "idle";
+  SelfTest selfTest_{};
+  SelfTestInput selfTestInput_{};
+  int16_t selfTestResultIndex_ = 0;
+  uint64_t selfTestLastPacket_ = 0;
+  uint64_t selfTestLastFix_ = 0;
+  SelfTest::RadioConfiguration selfTestRadio_ = SelfTest::RadioConfiguration::Restore;
+  int16_t firmwareUpdateSelection_ = 0;
+  std::string radioUpdateState_ = "browse";
+  int16_t radioFirmwareSelection_ = 0;
+  uint64_t radioUpdateStartedMs_ = 0;
 };

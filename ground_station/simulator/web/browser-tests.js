@@ -1,0 +1,1173 @@
+import {
+  applyFixtureToWasm,
+  DECISECOND_MS,
+  fixtureById,
+  injectReplayRow,
+  loadFixtureManifest,
+  parseReplayCsv
+} from './fixture-runtime.js';
+
+const resultNode = document.querySelector('#result');
+const results = [];
+const actualHashes = {};
+
+function snapshot(wasm) {
+  return JSON.parse(wasm.ccall('gs_snapshot_json', 'string', [], []));
+}
+
+function framebuffer(wasm) {
+  const size = wasm.ccall('gs_framebuffer_size', 'number', [], []);
+  const pointer = wasm.ccall('gs_framebuffer', 'number', [], []);
+  return wasm.HEAPU8.slice(pointer, pointer + size);
+}
+
+async function framebufferHash(wasm) {
+  const digest = await crypto.subtle.digest('SHA-256', framebuffer(wasm));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function assertClose(actual, expected, tolerance, label) {
+  assert(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, got ${actual}`);
+}
+
+function tap(wasm, button) {
+  wasm.ccall('gs_press', null, ['string'], [button]);
+  wasm.ccall('gs_release', null, ['string'], [button]);
+}
+
+async function test(name, body) {
+  try {
+    await body();
+    results.push({ name, passed: true });
+  } catch (error) {
+    results.push({ name, passed: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function run() {
+  const [moduleImport, manifest, goldens] = await Promise.all([
+    import('./gs-sim.js?v=browser-tests-10'),
+    loadFixtureManifest(),
+    fetch('./browser-golden.json', {cache: 'no-store'}).then(response => response.json())
+  ]);
+  const wasm = await moduleImport.default({ locateFile: path => `${path}?v=browser-tests-10` });
+
+  await test('module bootstrap', async () => {
+    wasm.ccall('gs_reset', null, [], []);
+    const state = snapshot(wasm);
+    assert(state.activeScreen === 'menu', `expected menu, got ${state.activeScreen}`);
+    assert(framebuffer(wasm).length === 12000, 'expected a 12,000-byte framebuffer');
+    actualHashes.menu = await framebufferHash(wasm);
+    captureSelfTest('Main menu status bar');
+  });
+
+  await test('startup animation', async () => {
+    wasm.ccall('gs_restart', null, [], []);
+    let state = snapshot(wasm);
+    assert(state.activeScreen === 'logo', `expected startup logo, got ${state.activeScreen}`);
+    assert(state.startupPhase === 'rocket_flight', `expected rocket_flight, got ${state.startupPhase}`);
+    wasm.ccall('gs_advance', null, ['number'], [600]);
+    actualHashes.startupRocket = await framebufferHash(wasm);
+    wasm.ccall('gs_advance', null, ['number'], [2900]);
+    state = snapshot(wasm);
+    assert(state.activeScreen === 'menu', `expected menu after startup, got ${state.activeScreen}`);
+    assert(state.startupPhase === 'complete', `expected completed startup, got ${state.startupPhase}`);
+  });
+
+  await test('light demo', async () => {
+    wasm.ccall('gs_restart', null, [], []);
+    const fixture = fixtureById(manifest, 'light-demo');
+    const applied = await applyFixtureToWasm(wasm, fixture, { lightMode: true, reset: false });
+    tap(wasm, 'ok');
+    const replayRows = parseReplayCsv(applied.logs[0].csv);
+    assert(applied.logs.length === 1, `expected one demo replay, got ${applied.logs.length}`);
+    assert(replayRows.length === 3300, `expected 3300 replay rows, got ${replayRows.length}`);
+    assert(fixture.lightPlaybackSpeed === 1, `expected real-time playback, got ${fixture.lightPlaybackSpeed}x`);
+    assert(DECISECOND_MS === 100, `expected one decisecond to equal 100 ms, got ${DECISECOND_MS} ms`);
+    assert(replayRows[0].timestampDs === 5929, `expected first timestamp 5929 ds, got ${replayRows[0].timestampDs}`);
+    assert(replayRows.at(-1).timestampDs === 8629, `expected last timestamp 8629 ds, got ${replayRows.at(-1).timestampDs}`);
+    assert(replayRows.at(-1).elapsedMs === 270000, `expected 270000 ms duration, got ${replayRows.at(-1).elapsedMs}`);
+    assert(replayRows.find(row => row.timestampDs === 5930)?.elapsedMs === 100,
+      'expected a one-decisecond timestamp step to replay after 100 ms');
+    assertClose(replayRows[0].latitude, 39.3899, 0.00001, 'replay latitude');
+    assertClose(replayRows[0].longitude, -8.2895, 0.00001, 'replay longitude');
+    assertClose(replayRows[0].voltage, 8.1, 0.001, 'replay voltage');
+    injectReplayRow(wasm, replayRows[0]);
+    const state = snapshot(wasm);
+    assert(state.activeScreen === 'live', `expected live, got ${state.activeScreen}`);
+    assert(state.liveView === 'downrange', 'Live defaults to downrange and bearing');
+    assert(state.logCount >= 1, `expected the demo log to remain available, got ${state.logCount}`);
+    assertClose(state.navigation.homeLatitude, 39.3899, 0.00001, 'home latitude');
+    assertClose(state.navigation.homeLongitude, -8.2895, 0.00001, 'home longitude');
+    actualHashes.lightDemo = await framebufferHash(wasm);
+    captureSelfTest('Live status bar');
+  });
+
+  await test('physical controls and snapshot', async () => {
+    wasm.ccall('gs_reset', null, [], []);
+    tap(wasm, 'right');
+    tap(wasm, 'ok');
+    const state = snapshot(wasm);
+    assert(state.activeScreen === 'recovery', `expected recovery, got ${state.activeScreen}`);
+    assert(state.framebufferRevision > 0, 'framebuffer revision did not advance');
+    actualHashes.recovery = await framebufferHash(wasm);
+    captureSelfTest('Recovery status bar');
+  });
+
+  await test('phone sensor injection', async () => {
+    wasm.ccall('gs_set_sensor_json', null, ['string'], [JSON.stringify({
+      homeLatitude: 47.1661,
+      homeLongitude: 8.5155,
+      northRad: -0.75,
+      pitchRad: 0.2,
+      rollRad: -0.1,
+      ax: 0.1,
+      ay: -0.2,
+      az: 0.95,
+      gx: 12.5,
+      gy: -3.25,
+      gz: 0.5
+    })]);
+    const state = snapshot(wasm);
+    assertClose(state.navigation.homeLatitude, 47.1661, 0.00001, 'sensor latitude');
+    assertClose(state.navigation.homeLongitude, 8.5155, 0.00001, 'sensor longitude');
+    assertClose(state.navigation.northRad, -0.75, 0.00001, 'sensor heading');
+    assertClose(state.navigation.pitchRad, 0.2, 0.00001, 'sensor pitch');
+    assertClose(state.navigation.rollRad, -0.1, 0.00001, 'sensor roll');
+    assertClose(state.navigation.ax, 0.1, 0.00001, 'sensor acceleration X');
+    assertClose(state.navigation.ay, -0.2, 0.00001, 'sensor acceleration Y');
+    assertClose(state.navigation.az, 0.95, 0.00001, 'sensor acceleration Z');
+    assertClose(state.navigation.gx, 12.5, 0.00001, 'sensor rotation X');
+    assertClose(state.navigation.gy, -3.25, 0.00001, 'sensor rotation Y');
+    assertClose(state.navigation.gz, 0.5, 0.00001, 'sensor rotation Z');
+  });
+
+  await test('compass orientation view', async () => {
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_navigation_json', null, ['string'], [JSON.stringify({
+      northRad: -Math.PI / 2,
+      pitchRad: -Math.PI / 15,
+      rollRad: Math.PI / 22.5,
+      mx: 940,
+      my: 180,
+      mz: -290
+    })]);
+    tap(wasm, 'down');
+    tap(wasm, 'right');
+    tap(wasm, 'ok');
+    captureSelfTest('Sensors - next-page arrow and angular-rate units');
+    tap(wasm, 'right');
+    const state = snapshot(wasm);
+    assert(state.activeScreen === 'sensors', `expected sensors, got ${state.activeScreen}`);
+    assert(state.sensorView === 'orientation', `expected orientation, got ${state.sensorView}`);
+    actualHashes.compassOrientation = await framebufferHash(wasm);
+    captureSelfTest('Compass status bar');
+    for (const [degrees, ballY] of [[90, 80], [0, 132], [-90, 184], [120, 80], [-120, 184], [0, 132]]) {
+      wasm.ccall('gs_set_navigation_json', null, ['string'], [JSON.stringify({pitchRad: degrees * Math.PI / 180})]);
+      wasm.ccall('gs_advance', null, ['number'], [200]);
+      const bytes = framebuffer(wasm);
+      for (const y of [80, 132, 184]) {
+        const pixel = (y + 2) * 400 + 381;
+        const black = (bytes[pixel >> 3] & (0x80 >> (pixel & 7))) === 0;
+        assert(black === (y === ballY), `pitch ${degrees}: ball position or stale pixels at ${y}`);
+      }
+      if (Math.abs(degrees) <= 90) captureSelfTest(`Compass pitch ${degrees} degrees`);
+    }
+    wasm.ccall('gs_set_navigation_json', null, ['string'], [JSON.stringify({
+      northRad: Math.PI / 1800, pitchRad: -89.9 * Math.PI / 180, rollRad: -Math.PI
+    })]);
+    wasm.ccall('gs_advance', null, ['number'], [200]);
+    captureSelfTest('Compass - wide signed readings');
+    tap(wasm, 'left');
+    assert(snapshot(wasm).sensorView === 'readings', 'Left returns to raw sensors');
+    captureSelfTest('Sensors - returned from compass');
+  });
+
+  await test('phone compass headings through the browser controls', async () => {
+    const frame = document.createElement('iframe');
+    frame.src = './index.html';
+    frame.style.cssText = 'width:1000px;height:700px';
+    document.body.append(frame);
+    const waitFor = async condition => {
+      for (let attempt = 0; attempt < 200; ++attempt) {
+        if (condition()) return;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      throw new Error('Phone compass page did not reach the expected state');
+    };
+    try {
+      await waitFor(() => frame.contentDocument?.querySelector('#status')?.textContent.includes('simulator ready'));
+      const page = frame.contentWindow;
+      const document = frame.contentDocument;
+      const state = () => JSON.parse(document.querySelector('#snapshot').textContent);
+      document.querySelector('#pause').click();
+      document.querySelector('#step').value = '4000';
+      document.querySelector('#advance').click();
+      const press = button => {
+        const control = document.querySelector(`[data-button="${button}"]`);
+        control.dispatchEvent(new page.Event('pointerdown', {cancelable: true}));
+        control.dispatchEvent(new page.Event('pointerup', {cancelable: true}));
+      };
+      for (const button of ['down', 'right', 'ok', 'right']) press(button);
+      assert(state().sensorView === 'orientation', 'phone page opens the production compass view');
+      // Exercise the real event handler without accessing host sensors or location.
+      Object.defineProperty(page.navigator, 'geolocation', {value: {watchPosition: () => 1, clearWatch: () => {}}});
+      for (const type of ['DeviceMotionEvent', 'DeviceOrientationEvent']) {
+        Object.defineProperty(page, type, {value: {requestPermission: async () => 'granted'}});
+      }
+      document.querySelector('#phone-sensor-toggle').click();
+      await waitFor(() => document.querySelector('#phone-sensor-toggle').textContent === 'Stop phone sensors');
+      for (const heading of [0, 45, 90, 135, 180, 225, 270, 315]) {
+        const event = new page.Event('deviceorientation');
+        // Cover Safari compass headings and absolute-orientation alpha values.
+        const properties = heading % 90 === 0 ? {webkitCompassHeading: heading}
+          : {absolute: true, alpha: (360 - heading) % 360};
+        for (const [name, value] of Object.entries(properties)) Object.defineProperty(event, name, {value});
+        page.dispatchEvent(event);
+        await new Promise(resolve => setTimeout(resolve, 220));
+        document.querySelector('#step').value = '20';
+        document.querySelector('#advance').click();
+        const expectedNorth = Math.atan2(Math.sin(-heading * Math.PI / 180), Math.cos(-heading * Math.PI / 180));
+        assertClose(state().navigation.northRad, expectedNorth, 0.00001, `phone heading ${heading}`);
+        const canvas = document.querySelector('#display');
+        const pixels = canvas.getContext('2d').getImageData(215, 82, 185, 28);
+        const digest = await crypto.subtle.digest('SHA-256', pixels.data);
+        actualHashes[`phoneHeading${heading}`] = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+        const figure = globalThis.document.createElement('figure');
+        const caption = globalThis.document.createElement('figcaption');
+        caption.textContent = `Phone compass ${heading} degrees`;
+        const capture = globalThis.document.createElement('canvas');
+        capture.width = 400; capture.height = 240;
+        capture.getContext('2d').drawImage(canvas, 0, 0);
+        figure.append(caption, capture);
+        globalThis.document.body.append(figure);
+      }
+      document.querySelector('#phone-sensor-toggle').click();
+    } finally {
+      frame.remove();
+    }
+  });
+
+  await test('all declarative fixtures', async () => {
+    for (const fixture of manifest.fixtures) {
+      await applyFixtureToWasm(wasm, fixture);
+      const state = snapshot(wasm);
+      const bytes = framebuffer(wasm);
+      assert(typeof state.activeScreen === 'string', `${fixture.id}: missing activeScreen`);
+      assert(state.framebufferRevision > 0, `${fixture.id}: framebuffer was not rendered`);
+      assert(bytes.length === 12000 && bytes.some(byte => byte !== 0), `${fixture.id}: invalid framebuffer`);
+      if (fixture.id === 'never' || fixture.id === 'finalize-failure') {
+        assert(state.activeScreen === 'live' && state.recorderState === 'recording' && state.activeFilename && state.recordedRowCount === 4,
+          `${fixture.id}: expected an active log including both touchdown samples`);
+        if (fixture.id === 'finalize-failure') {
+          tap(wasm, 'back'); tap(wasm, 'ok');
+          const failed = snapshot(wasm);
+          assert(failed.activeScreen === 'live' && failed.liveExitState === 'stop_failed' && failed.activeFilename === state.activeFilename,
+            'finalize-failure: failed close must retain the active log in Live');
+        }
+      }
+    }
+  });
+
+  await test('USB storage fixture', async () => {
+    await applyFixtureToWasm(wasm, fixtureById(manifest, 'usb-storage'));
+    const state = snapshot(wasm);
+    assert(state.activeScreen === 'usb_storage', `expected usb_storage, got ${state.activeScreen}`);
+    assert(state.usbStorageState === 'host', `expected host storage, got ${state.usbStorageState}`);
+    actualHashes.usbStorage = await framebufferHash(wasm);
+  });
+
+  await test('recorder fault fixture', async () => {
+    await applyFixtureToWasm(wasm, fixtureById(manifest, 'recorder-fault'));
+    const state = snapshot(wasm);
+    assert(state.recorderState === 'fault', `expected recorder fault, got ${state.recorderState}`);
+    actualHashes.recorderFault = await framebufferHash(wasm);
+    captureSelfTest('Recorder fault status bar');
+  });
+
+  await test('Live-only recording: confirmed exit, failure, and mid-flight re-entry', async () => {
+    const setLink = (index, value) => wasm.ccall('gs_set_link_json', null, ['string', 'string'], [String(index), JSON.stringify(value)]);
+    const setDevice = value => wasm.ccall('gs_set_device_status_json', null, ['string'], [JSON.stringify(value)]);
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_logs_json', null, ['string'], ['[]']);
+    wasm.ccall('gs_set_configuration_json', null, ['string'], ['{"dualReceiver":true,"neverStopLogging":true}']);
+    setDevice({usb: true});
+    setLink(1, {state: 3, timestampDs: 10});
+    assert(snapshot(wasm).recorderState === 'idle' && snapshot(wasm).logCount === 0, 'Menu does not record');
+    assert(snapshot(wasm).usbStorageState === 'host', 'telemetry outside Live does not reclaim USB');
+    tap(wasm, 'right'); tap(wasm, 'ok');
+    setLink(2, {state: 3, timestampDs: 10});
+    assert(snapshot(wasm).activeScreen === 'recovery' && snapshot(wasm).logCount === 0, 'Recovery does not record');
+    tap(wasm, 'back'); tap(wasm, 'left'); tap(wasm, 'ok');
+    setLink(1, {state: 3, timestampDs: 11, altitudeM: 100, velocityMps: 40, connected: true});
+    setLink(2, {state: 3, timestampDs: 11, altitudeM: 110, velocityMps: 42, connected: true});
+    let state = snapshot(wasm);
+    assert(state.recorderState === 'recording' && state.recordedRowCount === 2 && state.logCount === 1, 'Live records both links');
+    assert(state.usbStorageState === 'firmware', 'recording reclaims USB');
+    tap(wasm, 'back');
+    state = snapshot(wasm);
+    assert(state.activeScreen === 'live' && state.liveExitState === 'confirm', 'Back asks only while recording');
+    captureSelfTest('Leave Live - direct A and B actions');
+    setLink(1, {state: 4, timestampDs: 12});
+    assert(snapshot(wasm).recordedRowCount === 3, 'recording continues while confirmation is open');
+    tap(wasm, 'left'); tap(wasm, 'right');
+    assert(snapshot(wasm).liveExitState === 'confirm' && snapshot(wasm).recorderState === 'recording', 'direction buttons do not stop recording');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).liveExitState === 'none' && snapshot(wasm).recorderState === 'recording', 'B returns to Live and keeps recording');
+    captureSelfTest('Live after cancelling exit');
+    assert(snapshot(wasm).logCount === 1, 'B does not restart the log');
+    tap(wasm, 'back');
+    setDevice({finalizeFailure: true}); tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'live' && snapshot(wasm).liveExitState === 'stop_failed', 'failed stop stays in Live');
+    captureSelfTest('Leave Live - stop failed');
+    tap(wasm, 'back'); setDevice({finalizeFailure: false});
+    tap(wasm, 'back'); tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'menu' && snapshot(wasm).recorderState === 'idle', 'successful close leaves Live');
+    tap(wasm, 'down'); tap(wasm, 'ok'); tap(wasm, 'ok');
+    setLink(1, {state: 4, timestampDs: 13});
+    assert(snapshot(wasm).currentDataSubview === 'details' && snapshot(wasm).recordedRowCount === 3, 'Data opens directly and does not record');
+    tap(wasm, 'back'); tap(wasm, 'back'); tap(wasm, 'up'); tap(wasm, 'ok');
+    setLink(1, {state: 4, timestampDs: 14});
+    state = snapshot(wasm);
+    assert(state.recorderState === 'recording' && state.activeFilename === 'log_001.csv' && state.logCount === 2 && state.recordedRowCount === 1,
+      'mid-flight re-entry creates a new segment without READY');
+    tap(wasm, 'back'); tap(wasm, 'ok');
+    tap(wasm, 'right'); tap(wasm, 'right'); tap(wasm, 'down'); tap(wasm, 'ok');
+    setLink(1, {state: 4, timestampDs: 15});
+    assert(snapshot(wasm).activeScreen === 'settings' && snapshot(wasm).logCount === 2 && snapshot(wasm).recorderState === 'idle', 'Settings does not record');
+
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_logs_json', null, ['string'], ['[]']);
+    tap(wasm, 'ok'); tap(wasm, 'back');
+    assert(snapshot(wasm).activeScreen === 'menu' && snapshot(wasm).recorderState === 'idle' && snapshot(wasm).logCount === 0,
+      'Back leaves immediately before recording starts');
+    tap(wasm, 'ok');
+    setLink(1, {state: 3, timestampDs: 20});
+    setLink(1, {state: 7, timestampDs: 21});
+    assert(snapshot(wasm).recorderState === 'idle', 'touchdown closes the log');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).activeScreen === 'menu' && snapshot(wasm).logCount === 1, 'Back leaves immediately after recording finishes');
+
+    tap(wasm, 'ok');
+    setLink(1, {state: 3, timestampDs: 22}); tap(wasm, 'back');
+    setLink(1, {state: 7, timestampDs: 23}); tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'menu' && snapshot(wasm).logCount === 2, 'A leaves if touchdown finishes recording while the prompt is open');
+    for (const dualReceiver of [false, true]) {
+      for (const neverStopLogging of [false, true]) {
+        wasm.ccall('gs_reset', null, [], []);
+        wasm.ccall('gs_set_logs_json', null, ['string'], ['[]']);
+        wasm.ccall('gs_set_configuration_json', null, ['string'], [JSON.stringify({dualReceiver, neverStopLogging})]);
+        setDevice({usb: true});
+        tap(wasm, 'ok');
+        setLink(1, {state: 7, timestampDs: 30});
+        setLink(2, {state: 7, timestampDs: 30});
+        assert(snapshot(wasm).recorderState === 'idle' && snapshot(wasm).logCount === 0, 'DOWN re-entry never starts a log');
+        assert(snapshot(wasm).usbStorageState === 'host', 'DOWN alone does not reclaim USB storage');
+        tap(wasm, 'back');
+        assert(snapshot(wasm).activeScreen === 'menu' && snapshot(wasm).liveExitState === 'none', 'B leaves DOWN without a prompt');
+      }
+    }
+  });
+
+  await test('framebuffer goldens', async () => {
+    for (const [name, actual] of Object.entries(actualHashes)) {
+      assert(goldens[name], `missing browser golden for ${name}`);
+      assert(actual === goldens[name], `${name}: expected ${goldens[name]}, got ${actual}`);
+    }
+  });
+
+  function openSelfTest(faults = {}) {
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_configuration_json', null, ['string'], [JSON.stringify({linkPhrase1: 'normal-1', linkPhrase2: 'normal-2'})]);
+    wasm.ccall('gs_set_device_status_json', null, ['string'], [JSON.stringify({usb: false, batteryVoltage: 3.8, ...faults})]);
+    for (const button of ['down', 'right', 'right', 'ok', 'right', 'right', 'down', 'down', 'down', 'ok']) tap(wasm, button);
+    assert(snapshot(wasm).activeScreen === 'self_test', 'Settings > System > Self-Test opens');
+  }
+  function captureSelfTest(label) {
+    const figure = document.createElement('figure');
+    const caption = document.createElement('figcaption');
+    caption.textContent = label;
+    const canvas = document.createElement('canvas');
+    canvas.width = 400; canvas.height = 240;
+    canvas.style.cssText = 'width:600px;max-width:100%;image-rendering:pixelated;border:1px solid #888';
+    const context = canvas.getContext('2d');
+    const pixels = context.createImageData(400, 240);
+    const bytes = framebuffer(wasm);
+    for (let i = 0; i < 400 * 240; ++i) {
+      const value = (bytes[i >> 3] & (0x80 >> (i & 7))) ? 255 : 0;
+      pixels.data.set([value, value, value, 255], i * 4);
+    }
+    context.putImageData(pixels, 0, 0);
+    figure.append(caption, canvas);
+    document.body.append(figure);
+  }
+  const advanceSelfTest = ms => wasm.ccall('gs_advance', null, ['number'], [ms]);
+
+  function leaveSelfTestAndCheckHeader() {
+    // Inspect the first exit frame, before a release or subsequent redraw can
+    // clear away the stale pixels we are trying to detect.
+    wasm.ccall('gs_press', null, ['string'], ['back']);
+    const exitHeader = framebuffer(wasm).slice(0, 400 * 19 / 8);
+    wasm.ccall('gs_release', null, ['string'], ['back']);
+    const cleanHeader = framebuffer(wasm).slice(0, exitHeader.length);
+    assert(exitHeader.every((value, index) => value === cleanHeader[index]), 'first exit frame restores the entire status bar');
+  }
+
+  await test('factory self-test: leaving the entry restores the status bar', async () => {
+    openSelfTest();
+    leaveSelfTestAndCheckHeader();
+    assert(snapshot(wasm).activeScreen === 'settings', 'back returns to Settings');
+    captureSelfTest('Settings after leaving self-test entry');
+  });
+
+  function confirmSelfTestStep(phase, label, activePhase = phase) {
+    let state = snapshot(wasm);
+    assert(state.selfTestPhase === phase && state.selfTestWaiting, `${label} waits for Start`);
+    const resultsBefore = JSON.stringify(state.selfTestChecks);
+    const actionsBefore = state.actions.length;
+    advanceSelfTest(120000);
+    tap(wasm, 'up');
+    state = snapshot(wasm);
+    assert(state.selfTestPhase === phase && state.selfTestWaiting, `${label} does not start from waiting or another button`);
+    assert(JSON.stringify(state.selfTestChecks) === resultsBefore, `${label} does not score before Start`);
+    assert(state.actions.length === actionsBefore, `${label} has no radio actions before Start`);
+    captureSelfTest(label);
+    tap(wasm, 'ok');
+    state = snapshot(wasm);
+    assert(state.selfTestPhase === activePhase && !state.selfTestWaiting, `${label} starts only on A`);
+  }
+
+  await test('factory self-test: saved gyro calibration and failure reporting', async () => {
+    openSelfTest();
+    wasm.ccall('gs_set_sensor_json', null, ['string'], ['{"gx":1.2,"gy":-0.6,"gz":0.3}']);
+    tap(wasm, 'ok');
+    advanceSelfTest(6500);
+    let state = snapshot(wasm);
+    assert(state.selfTestChecks[0] === 'PASS' && state.gyroSaveCount === 1, 'step 0 saves the stationary offsets once');
+    const expected = [1.2, -0.6, 0.3];
+    state.gyroBias.forEach((value, axis) => assert(Math.abs(value - expected[axis]) < 0.001, `gyro bias axis ${axis}`));
+    wasm.ccall('gs_restart', null, [], []);
+    state = snapshot(wasm);
+    state.gyroBias.forEach((value, axis) => assert(Math.abs(value - expected[axis]) < 0.001, `saved bias survives restart, axis ${axis}`));
+    openSelfTest({selfTestGyroSaveFailure: true});
+    tap(wasm, 'ok'); advanceSelfTest(12000);
+    state = snapshot(wasm);
+    assert(state.selfTestChecks[0] === 'FAIL' && state.gyroSaveCount === 0, 'save failure cannot report calibrated');
+  });
+
+  await test('factory self-test: initial battery check rejects USB and low voltage', async () => {
+    for (const fault of [{usb: true}, {batteryVoltage: 2.9}]) {
+      openSelfTest(fault);
+      tap(wasm, 'ok'); advanceSelfTest(6000);
+      let state = snapshot(wasm);
+      assert(state.selfTestPhase === 2 && state.selfTestChecks[15] === 'WAIT', 'battery runs with the initial sensors');
+      advanceSelfTest(6000);
+      state = snapshot(wasm);
+      assert(state.selfTestChecks[15] === 'FAIL', `battery rejects ${JSON.stringify(fault)}`);
+      assert(state.selfTestPhase === 3 && state.selfTestWaiting, 'battery failure still reaches the telemetry prompt');
+    }
+  });
+
+  await test('factory self-test: strict SNR reception limit', async () => {
+    for (const snr of [-5, -4]) {
+      openSelfTest({selfTestSnr: snr});
+      tap(wasm, 'ok'); advanceSelfTest(12000);
+      tap(wasm, 'ok'); advanceSelfTest(140000);
+      assert(snapshot(wasm).selfTestChecks[6] === (snr > -5 ? 'PASS' : 'FAIL'), `SNR ${snr} dB uses a strict greater-than limit`);
+    }
+  });
+
+  await test('factory self-test: calibration, automatic phases and manual confirmation gates', async () => {
+    openSelfTest();
+    captureSelfTest('Self-test entry');
+    tap(wasm, 'ok');
+    advanceSelfTest(800);
+    captureSelfTest('Step 0 - gyro calibration');
+    advanceSelfTest(5100);
+    captureSelfTest('Phase 1 - Ground Station');
+    advanceSelfTest(6200);
+    let state = snapshot(wasm);
+    assert(state.selfTestChecks[15] === 'PASS', 'battery is checked automatically before telemetry');
+    assert(!state.actions.some(action => action.type === 'self_test_radio'), 'Phase 1 does not change radio settings');
+    confirmSelfTestStep(3, 'Phase 2 - ready for telemetry');
+    advanceSelfTest(8000);
+    captureSelfTest('Phase 2 - telemetry running');
+    advanceSelfTest(64000);
+    state = snapshot(wasm);
+    assert(state.selfTestChecks.slice(0, 12).every(value => value === 'PASS'), `automatic results: ${state.selfTestChecks}`);
+    assert(state.configuration.linkPhrase1 === 'normal-1' && state.configuration.linkPhrase2 === 'normal-2', 'test phrases never alter saved config');
+    confirmSelfTestStep(4, '3.1 - ready for sensor movement');
+    captureSelfTest('Sensor movement running');
+    for (let axis = 0; axis < 3; ++axis) {
+      for (const sign of [-1, 1]) {
+        const sample = {ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0, mx: sign*1000, my: sign*800, mz: sign*600};
+        sample[['ax', 'ay', 'az'][axis]] = sign;
+        sample[['gx', 'gy', 'gz'][axis]] = 30;
+        wasm.ccall('gs_set_sensor_json', null, ['string'], [JSON.stringify(sample)]);
+      }
+    }
+    confirmSelfTestStep(5, '3.2 - ready for buttons');
+    assert(snapshot(wasm).selfTestButtons === 0, 'Start press and release do not count as a tested button');
+    wasm.ccall('gs_press', null, ['string'], ['up']);
+    assert(snapshot(wasm).selfTestButtons === 0, 'a press without release does not pass');
+    wasm.ccall('gs_release', null, ['string'], ['up']);
+    captureSelfTest('Button press and release check');
+    for (const button of ['down', 'left', 'right', 'ok', 'back']) tap(wasm, button);
+    assert(snapshot(wasm).selfTestChecks[13] === 'PASS', 'six physical buttons complete the check without center');
+    confirmSelfTestStep(6, '3.3 - ready for display');
+    advanceSelfTest(2100);
+    captureSelfTest('Display - black pattern');
+    advanceSelfTest(4000);
+    captureSelfTest('Display - white pattern');
+    advanceSelfTest(4000);
+    captureSelfTest('Display - checkerboard');
+    advanceSelfTest(4000);
+    captureSelfTest('Display - inverse checkerboard');
+    advanceSelfTest(4000);
+    captureSelfTest('Display confirmation');
+    wasm.ccall('gs_press', null, ['string'], ['ok']);
+    advanceSelfTest(15000);
+    assert(snapshot(wasm).selfTestWaiting, 'holding display confirmation cannot start the USB check');
+    wasm.ccall('gs_release', null, ['string'], ['ok']);
+    assert(snapshot(wasm).selfTestPhase === 8, 'display is followed directly by the USB check');
+    confirmSelfTestStep(8, '3.4 - ready for USB drive');
+    advanceSelfTest(1000);
+    assert(snapshot(wasm).selfTestPhase === 8, 'USB check waits for a connection');
+    wasm.ccall('gs_set_device_status_json', null, ['string'], ['{"usb":true}']);
+    advanceSelfTest(20);
+    state = snapshot(wasm);
+    assert(state.selfTestPhase === 8 && state.usbStorageState === 'host', 'USB drive is shared before passing');
+    captureSelfTest('USB - waiting for computer read');
+    wasm.ccall('gs_set_device_status_json', null, ['string'], ['{"usbReadCount":1}']);
+    advanceSelfTest(20);
+    state = snapshot(wasm);
+    assert(state.selfTestResult === 'PASS' && state.selfTestChecks.length === 18, `complete test: ${state.selfTestChecks}`);
+    assert(state.usbStorageState === 'host', 'normal storage sharing resumes after the test');
+    captureSelfTest('Completed result');
+    for (let index = 0; index < 12; ++index) tap(wasm, 'down');
+    captureSelfTest('Movement result detail');
+    for (let index = 0; index < 6; ++index) tap(wasm, 'down');
+    captureSelfTest('Restoration result detail');
+    leaveSelfTestAndCheckHeader();
+    captureSelfTest('Settings after completed self-test');
+    state = snapshot(wasm);
+    assert(state.activeScreen === 'settings' && state.settingsPage === 2 && state.settingsSelection === 2, 'return to self-test Settings entry');
+  });
+
+  await test('factory self-test: missing receiver cannot be hidden by the other', async () => {
+    openSelfTest({selfTestMissingReceiver: 1});
+    tap(wasm, 'ok'); advanceSelfTest(12000);
+    tap(wasm, 'ok'); advanceSelfTest(140000);
+    const state = snapshot(wasm);
+    assert(state.selfTestChecks[1] === 'FAIL' && state.selfTestChecks[2] === 'PASS', 'independent firmware replies');
+    assert(state.selfTestChecks[6] === 'FAIL' && state.selfTestChecks[8] === 'FAIL', 'both dual and single expose missing receiver');
+    assert(state.selfTestChecks[10] === 'PASS', 'receiver 2 still tested independently');
+    assert(state.selfTestPhase === 4 && state.selfTestWaiting, 'failures still reach the first manual confirmation');
+  });
+
+  await test('factory self-test: GNSS and storage failures never become passes', async () => {
+    openSelfTest({selfTestGnss: false, selfTestStorageFailure: true});
+    tap(wasm, 'ok'); advanceSelfTest(127000);
+    let state = snapshot(wasm);
+    assert(state.selfTestChecks[3] === 'FAIL', 'GNSS timeout fails acquisition');
+    assert(state.selfTestChecks[11] === 'FAIL', 'storage failure is visible');
+    assert(state.selfTestPhase === 3 && state.selfTestWaiting, 'telemetry waits for its own confirmation');
+    tap(wasm, 'ok'); advanceSelfTest(72000);
+    state = snapshot(wasm);
+    assert(state.selfTestPhase === 4 && state.selfTestWaiting, 'manual checks wait after independent telemetry checks');
+    assert(state.selfTestChecks[3] === 'FAIL' && state.selfTestChecks[11] === 'FAIL', 'later checks preserve Phase 1 failures');
+  });
+
+  await test('factory self-test: cancellation cannot pass and restores configuration', async () => {
+    openSelfTest(); tap(wasm, 'ok'); advanceSelfTest(12000);
+    tap(wasm, 'ok'); advanceSelfTest(12000);
+    wasm.ccall('gs_hold', null, ['string', 'number'], ['back', 2100]);
+    advanceSelfTest(2600);
+    const state = snapshot(wasm);
+    assert(state.selfTestPhase === 9 && state.selfTestResult === 'FAIL', `cancellation phase=${state.selfTestPhase} result=${state.selfTestResult} checks=${state.selfTestChecks}`);
+    assert(state.selfTestChecks[12] === 'NOT TESTED', 'unfinished manual checks remain not tested');
+    assert(state.actions.some(action => action.type === 'self_test_restored'), 'restore requested');
+    assert(state.configuration.linkPhrase1 === 'normal-1', 'normal phrase retained');
+    captureSelfTest('Cancelled result');
+    leaveSelfTestAndCheckHeader();
+    captureSelfTest('Settings after cancelled self-test');
+  });
+
+  await test('settings organization: controls, inactive phrase and System actions', async () => {
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_configuration_json', null, ['string'], [JSON.stringify({dualReceiver: false, linkPhrase1: 'cats_test_1', linkPhrase2: 'cats_test_2', testingPhrase: 'cats_test'})]);
+    for (const button of ['down', 'right', 'right', 'ok']) tap(wasm, button);
+    assert(snapshot(wasm).settingsPage === 0, 'Settings opens on Telemetry');
+    captureSelfTest('Settings - Telemetry single');
+    for (const button of ['down', 'down', 'down', 'ok']) tap(wasm, button);
+    assert(snapshot(wasm).settingsState === 'list', 'Link Phrase 2 cannot be edited in Single mode');
+    assert(snapshot(wasm).configuration.linkPhrase2 === 'cats_test_2', 'inactive phrase is retained');
+    captureSelfTest('Settings - inactive Link Phrase 2');
+    for (const button of ['up', 'up', 'right']) tap(wasm, button);
+    assert(snapshot(wasm).configuration.dualReceiver, 'Receiver Mode changes the receiver setting');
+    captureSelfTest('Settings - Telemetry dual');
+    for (const key of ['linkPhrase1', 'linkPhrase2', 'testingPhrase']) {
+      tap(wasm, 'down'); tap(wasm, 'ok');
+      assert(snapshot(wasm).settingsState === 'keyboard', `${key} opens its keyboard`);
+      const before = snapshot(wasm).configuration[key];
+      tap(wasm, 'ok'); tap(wasm, 'back');
+      assert(snapshot(wasm).configuration[key] === `${before}1`, `${key} edits the correct phrase`);
+    }
+    for (const button of ['up', 'up', 'up', 'up', 'right', 'down', 'right']) tap(wasm, button);
+    assert(snapshot(wasm).settingsPage === 1 && snapshot(wasm).configuration.neverStopLogging, 'Stop Logging is first in Preferences');
+    tap(wasm, 'left'); tap(wasm, 'down'); tap(wasm, 'right');
+    assert(snapshot(wasm).configuration.timeZoneOffset === 1, 'Time Zone is second');
+    tap(wasm, 'down'); tap(wasm, 'right');
+    assert(snapshot(wasm).configuration.imperialUnits, 'Units is third');
+    tap(wasm, 'down'); tap(wasm, 'left');
+    assert(!snapshot(wasm).configuration.startupAnimation, 'Startup Animation is fourth');
+    captureSelfTest('Settings - Preferences');
+    for (const button of ['up', 'up', 'up', 'up', 'right', 'down']) tap(wasm, button);
+    assert(snapshot(wasm).settingsPage === 2 && snapshot(wasm).settingsSelection === 0, 'Firmware Versions is first in System');
+    captureSelfTest('Settings - System versions');
+    tap(wasm, 'down'); tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'usb_storage', 'USB Drive invokes storage');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).activeScreen === 'settings' && snapshot(wasm).settingsPage === 2 && snapshot(wasm).settingsSelection === 1, 'USB Drive returns to its System entry');
+    tap(wasm, 'down'); tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'self_test', 'Self-Test is third');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).settingsPage === 2 && snapshot(wasm).settingsSelection === 2, 'Self-Test returns to its System entry');
+    tap(wasm, 'down');
+    captureSelfTest('Settings - System update');
+    tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'firmware_update' && snapshot(wasm).firmwareUpdateSelection === 0, 'Update Firmware opens the target chooser');
+    captureSelfTest('Update Firmware - Ground Station');
+    tap(wasm, 'down');
+    assert(snapshot(wasm).firmwareUpdateSelection === 1, 'Radio Receivers is the second update target');
+    captureSelfTest('Update Firmware - Radio Receivers');
+    tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'radio_update' && snapshot(wasm).radioUpdateState === 'browse', 'Radio Receivers opens the firmware list');
+    captureSelfTest('Radio Update - file list');
+    tap(wasm, 'ok');
+    assert(snapshot(wasm).radioUpdateState === 'confirm', 'selecting radio firmware opens confirmation');
+    captureSelfTest('Radio Update - telemetry 1.2.0 requirement');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).radioUpdateState === 'browse', 'Back returns to the radio firmware list');
+    tap(wasm, 'back');
+    assert(snapshot(wasm).activeScreen === 'firmware_update' && snapshot(wasm).firmwareUpdateSelection === 1, 'Back returns to the radio update target');
+    tap(wasm, 'up');
+    tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'bootloader' && snapshot(wasm).actions.some(action => action.type === 'bootloader_requested'), 'Ground Station invokes the existing bootloader');
+  });
+
+  await test('settings versions: startup cache, bounded retries and navigation', async () => {
+    const setVersion = (link, firmwareVersion) => wasm.ccall('gs_set_link_json', null,
+      ['string', 'string'], [String(link), JSON.stringify({firmwareVersion})]);
+    const requests = link => snapshot(wasm).actions.filter(action => action.type === 'version_requested' && action.link === link).length;
+    const bootVersions = (dualReceiver, first = '1.1.3', second = '2.0.0') => {
+      wasm.ccall('gs_reset', null, [], []);
+      wasm.ccall('gs_set_configuration_json', null, ['string'], [JSON.stringify({dualReceiver, startupAnimation: false})]);
+      wasm.ccall('gs_restart', null, [], []);
+      setVersion(1, first); setVersion(2, second);
+      advanceSelfTest(2000);
+      const startup = snapshot(wasm);
+      assert(startup.telemetryVersion1 === (first || 'Reading...'), 'chip 1 acquired before opening Settings');
+      assert(startup.telemetryVersion2 === (second || 'Reading...'), 'chip 2 acquired before opening Settings');
+      for (const button of ['down', 'right', 'right', 'ok', 'right', 'right', 'down']) tap(wasm, button);
+      const state = snapshot(wasm);
+      assert(state.settingsPage === 2 && state.settingsSelection === 0, 'Firmware Versions item selected');
+    };
+    bootVersions(false);
+    captureSelfTest('Settings versions - single mode');
+    const before = framebuffer(wasm).slice();
+    setVersion(1, '9.0.0'); setVersion(2, '');
+    tap(wasm, 'ok');
+    assert(before.every((value, index) => value === framebuffer(wasm)[index]), 'A leaves cached readout unchanged');
+    tap(wasm, 'down'); tap(wasm, 'up');
+    assert(before.every((value, index) => value === framebuffer(wasm)[index]), 'returning to Version restores cached values');
+    wasm.ccall('gs_set_device_status_json', null, ['string'], ['{"usb":true}']);
+    advanceSelfTest(4000);
+    wasm.ccall('gs_set_device_status_json', null, ['string'], ['{"usb":false}']);
+    advanceSelfTest(20);
+    assert(requests(1) === 1 && requests(2) === 1, 'no reads from A, navigation, USB or elapsed time after success');
+    tap(wasm, 'up');
+    captureSelfTest('Settings after leaving Version');
+
+    bootVersions(true);
+    assert(snapshot(wasm).telemetryVersion2 === '2.0.0', 'both chips read in dual mode');
+    captureSelfTest('Settings versions - dual mode');
+    bootVersions(false, '1.1.3', '');
+    captureSelfTest('Settings versions - reading');
+    advanceSelfTest(6200);
+    assert(snapshot(wasm).telemetryVersion2 === 'No response', 'missing chip times out independently');
+    assert(requests(1) === 1 && requests(2) === 8, 'only the missing chip is retried');
+    captureSelfTest('Settings versions - missing chip');
+    setVersion(2, '2.0.1');
+    tap(wasm, 'ok'); advanceSelfTest(4000);
+    assert(snapshot(wasm).telemetryVersion2 === 'No response' && requests(2) === 8, 'no manual retry or ongoing polling after timeout');
+    bootVersions(false, '1.1.3', '2.0.1');
+    assert(snapshot(wasm).telemetryVersion2 === '2.0.1', 'restart acquires updated firmware version');
+    captureSelfTest('Settings versions - recovered chip');
+    bootVersions(false, '999.999.999-beta', '999.999.999-beta');
+    captureSelfTest('Settings versions - long values');
+    bootVersions(false, '', '');
+    advanceSelfTest(6200);
+    const state = snapshot(wasm);
+    assert(state.telemetryVersion1 === 'No response' && state.telemetryVersion2 === 'No response', 'both missing chips shown');
+    assert(requests(1) === 8 && requests(2) === 8, 'both startup retries bounded');
+    captureSelfTest('Settings versions - both chips missing');
+    bootVersions(false, '', '');
+    advanceSelfTest(2600);
+    setVersion(1, '1.1.3'); setVersion(2, '2.0.0');
+    advanceSelfTest(1000);
+    assert(snapshot(wasm).telemetryVersion1 === '1.1.3' && snapshot(wasm).telemetryVersion2 === '2.0.0', 'normal cold boot delay is covered');
+    assert(requests(1) === 6 && requests(2) === 6, 'startup stops retrying after delayed replies');
+  });
+
+  await test('live guidance: true-north bearings, dual targets and missing coordinates', async () => {
+    const setNavigation = values => wasm.ccall('gs_set_navigation_json', null, ['string'], [JSON.stringify(values)]);
+    const setLink = (link, values) => wasm.ccall('gs_set_link_json', null, ['string', 'string'], [String(link), JSON.stringify(values)]);
+    const pixels = (link, row) => {
+      const bytes = framebuffer(wasm);
+      const output = [];
+      for (let y = 99 + row * 25; y < 124 + row * 25; ++y) {
+        for (let x = 28 + link * 200; x < 158 + link * 200; ++x) {
+          const bit = y * 400 + x;
+          output.push((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+        }
+      }
+      return output;
+    };
+    const equal = (a, b) => a.every((value, index) => value === b[index]);
+    const unavailable = link => [0, 1].every(row => equal(pixels(link, row), noFix[row]));
+    wasm.ccall('gs_reset', null, [], []);
+    wasm.ccall('gs_set_configuration_json', null, ['string'], ['{"dualReceiver":true}']);
+    setNavigation({homeLatitude: 47, homeLongitude: 8, northRad: 0});
+    setLink(1, {latitude: 0, longitude: 0, connected: true, updated: false});
+    setLink(2, {latitude: 0, longitude: 0, connected: true, updated: false});
+    tap(wasm, 'ok');
+    assert(snapshot(wasm).activeScreen === 'live', 'live screen opens');
+    assert(snapshot(wasm).liveView === 'downrange', 'double view defaults to downrange and bearing');
+    const noFix = [pixels(0, 0), pixels(0, 1)];
+    assert(noFix.every(row => row.some(value => value === 0)), 'unavailable distance and bearing have visible placeholders');
+    assert(unavailable(1), 'both receivers without GNSS show unavailable distance and bearing');
+    captureSelfTest('Live - both GPS fixes missing');
+    // Keep both packet streams idle. Only sensor/GPS changes drive subsequent frames.
+    setLink(1, {latitude: 47.001, longitude: 8, updated: false});
+    setLink(2, {latitude: 47, longitude: 8.002, updated: false});
+    const initialDistance = [pixels(0, 0), pixels(1, 0)];
+    assert(!equal(initialDistance[0], initialDistance[1]), 'each link gets its own GPS distance');
+    const north = pixels(0, 1), east = pixels(1, 1);
+    assert(!equal(north, east), 'north and east targets have different bearings');
+    captureSelfTest('Live - north 000.0 and east 090.0');
+    actualHashes.liveNorthEast = await framebufferHash(wasm);
+    setNavigation({northRad: -Math.PI / 2});
+    advanceSelfTest(220);
+    assert(equal(pixels(0, 1), north) && equal(pixels(1, 1), east), 'turning east leaves both absolute bearings unchanged');
+    assert(initialDistance.every((value, link) => equal(value, pixels(link, 0))), 'rotation leaves GPS distances unchanged');
+    setNavigation({northRad: -Math.PI});
+    advanceSelfTest(220);
+    assert(equal(pixels(0, 1), north) && equal(pixels(1, 1), east), 'turning south leaves both absolute bearings unchanged');
+    setNavigation({northRad: Math.PI});
+    assert(equal(pixels(0, 1), north) && equal(pixels(1, 1), east), 'orientation wraparound leaves absolute bearings unchanged');
+    setLink(1, {latitude: 46.999, longitude: 8, updated: false});
+    setLink(2, {latitude: 47, longitude: 7.998, updated: false});
+    const south = pixels(0, 1), west = pixels(1, 1);
+    assert([north, east].every(value => !equal(value, south) && !equal(value, west)), 'south and west are distinct from north and east');
+    assert(!equal(south, west), 'south and west have different absolute bearings');
+    captureSelfTest('Live - south 180.0 and west 270.0');
+    actualHashes.liveSouthWest = await framebufferHash(wasm);
+    setLink(1, {latitude: 47.1, longitude: 7.99999, updated: false});
+    assert(equal(pixels(0, 1), north), 'rounding near north wraps 360.0 back to 000.0');
+    setLink(1, {latitude: 47, longitude: 8, updated: false});
+    assert(equal(pixels(0, 1), noFix[1]), 'a coincident target has distance but an unavailable bearing');
+    setLink(2, {latitude: 47, longitude: 8.002, updated: false});
+    const otherBearing = pixels(1, 1), otherDistance = pixels(1, 0);
+    setLink(1, {latitude: 0, longitude: 0, updated: false});
+    assert(unavailable(0), 'missing rocket coordinates show both fields as unavailable');
+    assert(equal(otherBearing, pixels(1, 1)) && equal(otherDistance, pixels(1, 0)), 'missing Link 1 GPS does not affect Link 2');
+    captureSelfTest('Live - Link 1 GPS missing');
+    setNavigation({homeLatitude: 0, homeLongitude: 0});
+    assert(unavailable(0) && unavailable(1), 'missing GS coordinates show both panels as unavailable');
+    captureSelfTest('Live - GS GPS missing');
+    setNavigation({homeLatitude: 47.002, homeLongitude: 8, northRad: 0});
+    advanceSelfTest(220);
+    assert(!equal(otherDistance, pixels(1, 0)), 'moving the GS updates distance without rocket packets');
+    setLink(2, {latitude: 91, longitude: 8, updated: false});
+    assert(unavailable(1), 'out-of-range coordinates do not produce a bearing');
+
+    // Panel positions remain independent in Single mode, too.
+    wasm.ccall('gs_set_configuration_json', null, ['string'], ['{"dualReceiver":false}']);
+    setNavigation({homeLatitude: 47, homeLongitude: 8, northRad: 0});
+    setLink(1, {latitude: 47.001, longitude: 8});
+    advanceSelfTest(20);
+    setLink(2, {latitude: 47, longitude: 8.002});
+    assert(equal(pixels(0, 1), north) && equal(pixels(1, 1), east), 'Single mode keeps different receiver positions separate');
+    assert(initialDistance.every((value, link) => equal(value, pixels(link, 0))), 'Single mode keeps each receiver distance');
+    advanceSelfTest(20);
+    setLink(1, {latitude: 47.001, longitude: 8});
+    assert(equal(pixels(0, 1), north) && equal(pixels(1, 1), east), 'a newer Link 1 packet does not replace Link 2 bearing');
+    captureSelfTest('Live - Single mode, independent north and east targets');
+    setLink(1, {latitude: 0, longitude: 0});
+    assert(unavailable(0) && equal(pixels(1, 1), east), 'missing Link 1 GNSS does not borrow Link 2 position');
+    assert(equal(pixels(1, 0), initialDistance[1]), 'missing Link 1 GNSS leaves Link 2 distance unchanged');
+    setLink(1, {latitude: 47.001, longitude: 8});
+    setLink(2, {latitude: 0, longitude: 0, connected: false});
+    assert(equal(pixels(0, 1), north) && unavailable(1), 'disconnected Link 2 without GNSS does not borrow Link 1 position');
+    captureSelfTest('Live - Single mode, Link 2 disconnected with no fix');
+    setLink(1, {latitude: 0, longitude: 0});
+    setLink(2, {latitude: 0, longitude: 0});
+    assert(unavailable(0) && unavailable(1), 'Single mode shows neither target when both GNSS fixes are missing');
+    setLink(1, {testingMode: true});
+    assert([0, 1].every(row => pixels(0, row).every(value => value === 1)), 'testing mode keeps navigation hidden');
+    assert(unavailable(1), 'Link 1 testing mode does not change Link 2 placeholders');
+    for (const name of ['liveNorthEast', 'liveSouthWest']) {
+      assert(actualHashes[name] === goldens[name], `${name}: expected ${goldens[name]}, got ${actualHashes[name]}`);
+    }
+  });
+
+  await test('live compass: eight directions, sector boundaries and label clearance', async () => {
+    const set = (name, value) => wasm.ccall(name, null, ['string'], [JSON.stringify(value)]);
+    const equal = (a, b) => a.every((pixel, index) => pixel === b[index]);
+    const pixels = (link, left, right) => {
+      const bytes = framebuffer(wasm), output = [];
+      for (let y = 124; y < 149; ++y) for (let x = left; x < right; ++x) {
+        const bit = y * 400 + link * 200 + x;
+        output.push((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+      }
+      return output;
+    };
+    const pointAt = (link, angle) => {
+      const radians = angle * Math.PI / 180;
+      wasm.ccall('gs_set_link_json', null, ['string', 'string'], [String(link + 1), JSON.stringify({
+        latitude: 0.25 * Math.cos(radians), longitude: 1 + 0.25 * Math.sin(radians), connected: true, updated: false
+      })]);
+    };
+    wasm.ccall('gs_reset', null, [], []);
+    set('gs_set_configuration_json', {dualReceiver: true});
+    set('gs_set_navigation_json', {homeLatitude: 0, homeLongitude: 1});
+    tap(wasm, 'ok');
+    const triangles = [pixels(0, 180, 198), pixels(1, 180, 198)];
+    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const suffixes = directions.map((direction, index) => {
+      pointAt(0, index * 45);
+      return pixels(0, 130, 180);
+    });
+    assert(new Set(suffixes.map(value => value.join(''))).size === 8, 'all eight compass suffixes are distinct');
+    const check = (angle, sector) => {
+      for (let link = 0; link < 2; ++link) {
+        pointAt(link, angle);
+        assert(equal(pixels(link, 130, 180), suffixes[sector]), `${angle} degrees selects ${directions[sector]} on Link ${link + 1}`);
+        assert(pixels(link, 171, 184).every(pixel => pixel === 1), 'the widest suffix leaves 13 clear pixels before the navigation triangle');
+        assert(equal(pixels(link, 180, 198), triangles[link]), 'bearing redraw preserves the navigation triangle');
+      }
+    };
+    for (let sector = 0; sector < 8; ++sector) {
+      check(sector * 45, sector);
+      const boundary = 22.5 + sector * 45;
+      check(boundary - 0.01, sector);
+      check(boundary, (sector + 1) % 8);
+      check(boundary + 0.01, (sector + 1) % 8);
+    }
+    for (const angle of [359.9, 359.99, 0, 0.01]) check(angle, 0);
+    pointAt(0, 225); pointAt(1, 315);
+    captureSelfTest('Live - compass SW and widest NW suffix');
+    for (const button of ['right', 'left']) tap(wasm, button);
+    assert(equal(pixels(0, 130, 180), suffixes[5]) && equal(pixels(1, 130, 180), suffixes[7]),
+      'returning from GNSS restores both compass labels');
+    for (let link = 0; link < 2; ++link) {
+      wasm.ccall('gs_set_link_json', null, ['string', 'string'], [String(link + 1), '{"latitude":0,"longitude":0}']);
+      assert(pixels(link, 130, 180).every(pixel => pixel === 1), 'losing a fix clears the full compass label');
+      assert(equal(pixels(link, 180, 198), triangles[link]), 'clearing a compass label preserves navigation');
+    }
+  });
+
+  await test('live GNSS: no-fix placeholders and valid zero coordinates', async () => {
+    wasm.ccall('gs_reset', null, [], []);
+    const setLink = values => wasm.ccall('gs_set_link_json',null,['string','string'],['1',JSON.stringify({connected:true,...values})]);
+    const coordinates = () => {
+      const bytes = framebuffer(wasm), pixels = [];
+      for(let y=99;y<149;y++)for(let x=28;x<158;x++) {
+        const bit=y*400+x; pixels.push((bytes[bit>>3]>>(7-(bit&7)))&1);
+      }
+      return pixels;
+    };
+    setLink({latitude:0,longitude:0}); tap(wasm,'ok'); tap(wasm,'right');
+    assert(snapshot(wasm).liveView === 'gnss', 'Right opens the GNSS view');
+    const missing = coordinates();
+    setLink({latitude:0,longitude:8});
+    assert(coordinates().some((pixel,index)=>pixel!==missing[index]),'latitude zero remains valid on the equator');
+    setLink({latitude:47,longitude:0});
+    assert(coordinates().some((pixel,index)=>pixel!==missing[index]),'longitude zero remains valid on the prime meridian');
+    setLink({latitude:0,longitude:0});
+    assert(coordinates().every((pixel,index)=>pixel===missing[index]),'loss of GPS replaces both coordinates with placeholders');
+    tap(wasm,'left');
+    assert(snapshot(wasm).liveView === 'downrange', 'Left returns to downrange and bearing');
+    tap(wasm,'right');
+    assert(coordinates().every((pixel,index)=>pixel===missing[index]),'switching views preserves no-fix placeholders');
+    captureSelfTest('Live GNSS - no fix placeholders');
+    setLink({latitude:91,longitude:8});
+    assert(coordinates().every((pixel,index)=>pixel===missing[index]),'out-of-range coordinates are unavailable');
+    tap(wasm,'back'); tap(wasm,'ok');
+    assert(snapshot(wasm).liveView === 'downrange', 're-entering Live restores the default downrange view');
+  });
+
+  await test('double-view descent callouts and ten-second range trends', async () => {
+    const set = (name, value) => wasm.ccall(name, null, ['string'], [JSON.stringify(value)]);
+    const timestamps = [0, 1000, 1000], sentAt = [0, 0, 0];
+    const link = (index, value) => {
+      const now = snapshot(wasm).virtualTimeMs;
+      timestamps[index] = (timestamps[index] + Math.max(1, Math.floor((now - sentAt[index]) / 100))) & 0x7fff;
+      sentAt[index] = now;
+      wasm.ccall('gs_set_link_json', null, ['string', 'string'],
+        [String(index), JSON.stringify({connected: true, timestampDs: timestamps[index], ...value})]);
+    };
+    const latitude = metres => metres / (6378100 * Math.PI / 180);
+    const region = (index, x, y, width, height) => {
+      const bytes = framebuffer(wasm), pixels = [];
+      for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
+        const bit = row * 400 + index * 200 + col;
+        pixels.push((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+      }
+      return pixels;
+    };
+    const trend = index => region(index, 144, 100, 24, 24);
+    const phase = index => region(index, 144, 75, 24, 24);
+    const equal = (a, b) => a.every((pixel, i) => pixel === b[i]);
+    const empty = pixels => pixels.every(pixel => pixel === 1);
+    wasm.ccall('gs_reset', null, [], []);
+    set('gs_set_configuration_json', {dualReceiver: true});
+    set('gs_set_navigation_json', {homeLatitude: 0, homeLongitude: 8});
+    link(1, {state: 4, velocityMps: -38, altitudeM: 1234, latitude: latitude(100), longitude: 8,
+      voltage: 4.1, pyroContinuity: 3, linkQuality: 98});
+    link(2, {state: 4, velocityMps: -9, altitudeM: 700, latitude: latitude(200), longitude: 8,
+      voltage: 4.0, pyroContinuity: 3, linkQuality: 95});
+    tap(wasm, 'ok');
+    assert([0, 1].every(i => empty(trend(i)) && empty(phase(i))), 'negative speed before apogee shows no descent callouts');
+    link(1, {state: 6}); link(2, {state: 5});
+    const drogue = phase(0), main = phase(1), pending = trend(0);
+    assert(!empty(drogue) && !equal(drogue, main), 'speed estimates differ despite opposite internal states');
+    link(1, {velocityMps: -63});
+    assert(equal(phase(0), drogue), 'an isolated fast sample leaves the established Drogue estimate');
+    wasm.ccall('gs_advance', null, ['number'], [2000]);
+    link(1, {velocityMps: -9999});
+    const ballistic = phase(0);
+    assert(!equal(ballistic, main) && !equal(ballistic, drogue), 'sustained fast descent confirms Ballistic');
+    // Start an independent ten-second range window after the confirmation checks.
+    link(1, {latitude: 0, longitude: 0}); link(2, {latitude: 0, longitude: 0});
+    link(1, {latitude: latitude(100), longitude: 8}); link(2, {latitude: latitude(200), longitude: 8});
+    const speed = region(0, 28, 75, 105, 24);
+    for (let second = 1; second <= 10; second++) {
+      wasm.ccall('gs_advance', null, ['number'], [1000]);
+      link(1, {latitude: latitude(100 + 5 * second)});
+      link(2, {latitude: latitude(200 - 5 * second)});
+      if (second === 5) tap(wasm, 'right');
+      if (second === 10) tap(wasm, 'left');
+      if (second < 10 && snapshot(wasm).liveView === 'downrange') {
+        assert(equal(trend(0), pending) && equal(trend(1), pending), 'trend waits for a full ten seconds');
+      }
+    }
+    const increasing = trend(0), decreasing = trend(1);
+    assert(!equal(increasing, pending) && !equal(decreasing, pending) && !equal(increasing, decreasing),
+      '+50 and -50 metres produce distinct inclusive trends');
+    assert(equal(region(0, 28, 75, 105, 24), speed), 'four-digit speed is unchanged by its adjacent phase icon');
+    assert(empty(region(0, 133, 75, 11, 24)), 'four-digit speed and units have a clear gap before the phase icon');
+    captureSelfTest('Double view - four-digit speed and independent trends');
+    actualHashes.descentFourDigits = await framebufferHash(wasm);
+    set('gs_set_configuration_json', {imperialUnits: true});
+    link(1, {velocityMps: -1234});
+    assert(equal(trend(0), increasing) && equal(trend(1), decreasing), 'range trends keep metre thresholds in imperial mode');
+    assert(equal(phase(0), ballistic), 'phase thresholds stay in metres per second in imperial mode');
+    assert(empty(region(0, 133, 75, 11, 24)), 'four-digit imperial speed and units leave room for the phase icon');
+    captureSelfTest('Double view - four-digit imperial speed');
+    set('gs_set_configuration_json', {imperialUnits: false});
+    link(1, {velocityMps: -38});
+    wasm.ccall('gs_advance', null, ['number'], [2000]);
+    link(1, {velocityMps: -38});
+    assert(equal(phase(0), drogue), 'slower sustained descent returns from Ballistic to Drogue');
+    link(1, {latitude: 0, longitude: 0}); link(2, {latitude: 0, longitude: 0});
+    link(1, {latitude: latitude(100), longitude: 8}); link(2, {latitude: latitude(200), longitude: 8});
+    for (let second = 1; second <= 10; second++) {
+      wasm.ccall('gs_advance', null, ['number'], [1000]);
+      link(1, {latitude: latitude(100 + 5 * second)}); link(2, {latitude: latitude(200 - 5 * second)});
+    }
+    link(1, {velocityMps: -38, latitude: latitude(149)}); link(2, {latitude: latitude(151)});
+    const steady = trend(0);
+    assert(equal(trend(1), steady) && !equal(steady, increasing) && !equal(steady, decreasing), '+49 and -49 metres are Steady');
+    link(1, {latitude: latitude(150)}); link(2, {latitude: latitude(150)});
+    assert(equal(trend(0), increasing) && equal(trend(1), decreasing), '+50 and -50 boundaries are inclusive');
+    wasm.ccall('gs_advance', null, ['number'], [1000]);
+    link(1, {latitude: latitude(154)}); link(2, {latitude: latitude(146)});
+    assert(equal(trend(0), steady) && equal(trend(1), steady), 'rolling history uses the latest ten seconds');
+    wasm.ccall('gs_advance', null, ['number'], [500]);
+    link(1, {latitude: latitude(156)}); link(2, {latitude: latitude(144)});
+    assert(equal(trend(0), steady) && equal(trend(1), steady), 'history interpolates at ten seconds ago between samples');
+    const footer = region(0, 0, 219, 199, 21);
+    link(1, {snr: -50, rssi: -110});
+    assert(equal(region(0, 0, 219, 199, 21), footer), 'SNR and RSSI do not appear in the footer');
+    link(1, {linkQuality: 100, errors: 0});
+    assert(!equal(region(0, 0, 219, 199, 21), footer), 'LQ remains visible at the bottom');
+    const errorRow = index => region(index, 1, 200, 197, 19);
+    const footerWithFullLq = region(0, 0, 219, 199, 21);
+    const errorFrames = [];
+    for (const [mask, label] of [[1, 'No Config'], [2, 'Log Full'], [4, 'Filter Error'],
+      [8, 'Overheating'], [16, 'Continuity Error'], [32, 'Calibration Error']]) {
+      link(1, {errors: mask});
+      assert(!empty(errorRow(0)) && empty(errorRow(1)), `${label} appears only in the affected receiver`);
+      assert(equal(phase(0), drogue) && equal(trend(0), steady), `${label} leaves both descent callouts intact`);
+      assert(equal(region(0, 0, 219, 199, 21), footerWithFullLq), `${label} does not overlap AGE and LQ`);
+      errorFrames.push(errorRow(0));
+      captureSelfTest(`Double view - ${label}`);
+      link(1, {errors: 0});
+      assert(empty(errorRow(0)), `clearing ${label} leaves no stale error text`);
+    }
+    link(1, {errors: 63});
+    assert(equal(errorRow(0), errorFrames[2]), 'multiple errors retain the existing Filter Error priority');
+    link(1, {errors: 32}); link(2, {errors: 16});
+    assert(!empty(errorRow(0)) && !empty(errorRow(1)), 'both receivers can display their own error with the descent labels');
+    captureSelfTest('Double view - descent labels with errors');
+    link(1, {errors: 0}); link(2, {errors: 0});
+    assert(empty(errorRow(0)) && empty(errorRow(1)), 'both error rows clear independently');
+    link(1, {errors: 0, latitude: 0, longitude: 0});
+    assert(equal(trend(0), pending) && equal(trend(1), steady), 'missing Link 1 GNSS clears only its trend');
+    assert(equal(phase(0), drogue), 'speed-based phase remains available without GNSS');
+    link(1, {latitude: latitude(156), longitude: 8});
+    assert(equal(trend(0), pending), 'GNSS recovery starts a new range history');
+    tap(wasm, 'right');
+    assert(snapshot(wasm).liveView === 'gnss' && equal(phase(0), drogue), 'the GNSS double view also shows the estimate');
+    tap(wasm, 'left');
+    wasm.ccall('gs_advance', null, ['number'], [5000]);
+    assert([0, 1].every(i => empty(trend(i)) && empty(phase(i))), 'stale telemetry clears inferred callouts');
+    link(1, {state: 7, velocityMps: 0});
+    assert(empty(trend(0)) && empty(phase(0)), 'touchdown ends descent estimates');
+    link(1, {state: 2}); link(1, {state: 5, velocityMps: -9});
+    assert(equal(trend(0), pending) && equal(phase(0), main), 'a new descent starts without the previous flight history');
+    assert(actualHashes.descentFourDigits === goldens.descentFourDigits,
+      `descentFourDigits: expected ${goldens.descentFourDigits}, got ${actualHashes.descentFourDigits}`);
+  });
+
+  await test('descent phase hysteresis: fresh samples, confirmation, loss and independent Vegas', async () => {
+    const ids = [0, 1000, 2000], sentAt = [0, 0, 0];
+    const advance = ms => wasm.ccall('gs_advance', null, ['number'], [ms]);
+    const sample = (index, speed, fields = {}) => {
+      const now = snapshot(wasm).virtualTimeMs;
+      ids[index] = fields.timestampDs ?? ((ids[index] + Math.max(1, Math.floor((now - sentAt[index]) / 100))) & 0x7fff);
+      sentAt[index] = now;
+      wasm.ccall('gs_set_link_json', null, ['string', 'string'], [String(index),
+        JSON.stringify({connected: true, state: 5, velocityMps: -speed, timestampDs: ids[index], ...fields})]);
+    };
+    const pixels = (index, x, y, width, height) => {
+      const bytes = framebuffer(wasm), output = [];
+      for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
+        const bit = row * 400 + index * 200 + col;
+        output.push((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+      }
+      return output;
+    };
+    const phase = index => pixels(index, 144, 75, 24, 24);
+    const equal = (a, b) => a.every((value, i) => value === b[i]);
+    const check = (index, expected, label) => assert(equal(phase(index), expected), label);
+    const reset = (speed, other = 38) => {
+      wasm.ccall('gs_reset', null, [], []);
+      ids[1] = 1000; ids[2] = 2000; sentAt[1] = sentAt[2] = 0;
+      sample(1, speed); sample(2, other); tap(wasm, 'ok');
+    };
+    reset(10); const main = phase(0);
+    reset(38); const drogue = phase(0);
+    reset(80); const fast = phase(0);
+    for (const [speed, expected] of [[0, main], [12, main], [13, drogue], [60, drogue], [61, fast]]) {
+      reset(speed); check(0, expected, `${speed} m/s initializes at the specified boundary`);
+    }
+    const jitter = (initial, speeds, expected) => {
+      reset(initial);
+      for (const speed of speeds) { advance(500); sample(1, speed); check(0, expected, `${initial}: boundary jitter at ${speed}`); }
+    };
+    jitter(12, [13, 14, 13, 14, 13, 14, 13], main);
+    jitter(13, [12, 13, 12, 13, 12, 13], drogue);
+    jitter(60, [62, 63, 62, 63, 62, 63, 62], drogue);
+    jitter(61, [60, 58, 57, 58, 57, 58], fast);
+    reset(10); sample(1, 70); advance(1000); sample(1, 10); advance(2500); sample(1, 10);
+    check(0, main, 'an isolated spike cannot change Main');
+
+    const confirm = (speed, expected, label, index = 1) => {
+      const old = phase(index - 1);
+      sample(index, speed); advance(1900); sample(index, speed);
+      check(index - 1, old, `${label} waits until two seconds`);
+      advance(100); sample(index, speed); check(index - 1, expected, `${label} confirms at two seconds`);
+    };
+    reset(10); confirm(14, drogue, 'Main to Drogue at 14');
+    confirm(12, main, 'Drogue to Main at 12');
+    confirm(14, drogue, 'Main is not permanently latched');
+    confirm(63, fast, 'Drogue to Fast at 63');
+    confirm(57, drogue, 'Fast to Drogue at 57');
+    reset(10); confirm(63, fast, 'direct Main to Fast at 63');
+    confirm(12, main, 'direct Fast to Main at 12');
+
+    reset(10); sample(1, 14); advance(1000); sample(1, 63); advance(1000); sample(1, 63);
+    check(0, main, 'changing candidate resets confirmation');
+    advance(1000); sample(1, 63); check(0, fast, 'the replacement candidate gets its own two seconds');
+
+    reset(10); const numeric = pixels(0, 28, 75, 105, 24);
+    sample(1, 14); const repeatedId = ids[1];
+    assert(!equal(numeric, pixels(0, 28, 75, 105, 24)), 'numeric speed updates while phase remains Main');
+    check(0, main, 'numeric changes do not immediately change phase');
+    captureSelfTest('Double view - phase confirmation pending');
+    advance(2500); check(0, main, 'screen refreshes alone do not confirm a phase');
+    sample(1, 14, {timestampDs: repeatedId});
+    tap(wasm, 'right'); tap(wasm, 'left');
+    check(0, main, 'duplicate packets and changing views do not advance confirmation');
+    sample(1, 14, {timestampDs: repeatedId + 1});
+    check(0, main, 'only 0.1 seconds of new source telemetry cannot confirm despite elapsed wall time');
+    advance(1900); sample(1, 14); check(0, drogue, 'two seconds of new source telemetry confirms');
+
+    reset(38); sample(1, 12); advance(5000);
+    assert(phase(0).every(pixel => pixel === 1), 'stale telemetry hides the phase');
+    sample(1, 12); check(0, drogue, 'telemetry recovery retains the established phase and restarts confirmation');
+    advance(1900); sample(1, 12); check(0, drogue, 'stale time cannot count toward confirmation');
+    advance(100); sample(1, 12); check(0, main, 'fresh recovery samples can confirm Main');
+    reset(38); sample(1, 12); tap(wasm, 'back'); tap(wasm, 'ok'); advance(6000); sample(1, 12); tap(wasm, 'ok');
+    check(0, drogue, 'a telemetry gap cancels pending confirmation even while outside Live');
+
+    reset(10, 80); sample(1, 14); advance(1000); sample(2, 57); advance(1000); sample(1, 14);
+    check(0, drogue, 'Link 1 confirms independently'); check(1, fast, 'Link 2 still waits on its own timer');
+    advance(1000); sample(2, 57); check(1, drogue, 'Link 2 confirms on its own timeline');
+    sample(1, 63); tap(wasm, 'right'); advance(2000); sample(1, 63);
+    check(0, fast, 'confirmation continues in the GNSS view');
+    tap(wasm, 'left'); check(0, fast, 'returning to downrange preserves the established phase');
+
+    sample(1, 0, {state: 7});
+    assert(phase(0).every(pixel => pixel === 1), 'touchdown clears the descent label');
+    assert(pixels(0, 144, 100, 24, 24).every(pixel => pixel === 1), 'touchdown clears the range trend');
+    assert(pixels(0, 1, 173, 197, 27).every(pixel => pixel === 1), 'touchdown clears the combined descent text');
+    check(1, drogue, 'one Vega reaching touchdown leaves the other phase intact');
+    captureSelfTest('Double view - Link 1 touchdown clears descent callouts');
+    sample(1, 10, {state: 2}); sample(1, 10);
+    check(0, main, 'a new flight initializes a new label');
+    reset(10); sample(1, 10, {state: 2, timestampDs: 32759}); sample(1, 10, {timestampDs: 32759});
+    sample(1, 14, {timestampDs: 32760}); advance(2000); sample(1, 14, {timestampDs: 12});
+    check(0, drogue, 'confirmation handles the 15-bit timestamp wrap');
+
+    reset(10); tap(wasm, 'back'); tap(wasm, 'ok'); advance(60000);
+    sample(1, 38, {timestampDs: 500}); tap(wasm, 'ok');
+    check(0, drogue, 'a restarted source timestamp after an outage initializes the new flight');
+    confirm(63, fast, 'confirmation continues on the restarted source timeline');
+
+    reset(10); sample(1, 38, {timestampDs: 500});
+    check(0, main, 'an older packet without an outage cannot reset the established phase');
+  });
+
+  const failed = results.filter(result => !result.passed);
+  const report = { passed: failed.length === 0, results, framebufferSha256: actualHashes };
+  globalThis.browserTestReport = report;
+  resultNode.dataset.status = report.passed ? 'passed' : 'failed';
+  resultNode.textContent = JSON.stringify(report, null, 2);
+  document.title = report.passed ? 'PASS - Ground Station browser tests' : 'FAIL - Ground Station browser tests';
+}
+
+run().catch(error => {
+  const report = { passed: false, fatal: error instanceof Error ? error.stack || error.message : String(error), results };
+  globalThis.browserTestReport = report;
+  resultNode.dataset.status = 'failed';
+  resultNode.textContent = JSON.stringify(report, null, 2);
+  document.title = 'FAIL - Ground Station browser tests';
+});

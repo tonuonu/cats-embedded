@@ -11,6 +11,7 @@
 #include "display.hpp"
 #include "logging/flightStatistics.hpp"
 #include "navigation.hpp"
+#include "self_test.hpp"
 #include "settings.hpp"
 #include "startup_intro.hpp"
 #include "telemetry/telemetryData.hpp"
@@ -37,7 +38,7 @@ class Window {
 
   enum class LiveState { kShowGnss, kShowDownRange };
 
-  void begin();
+  void begin(bool resetLiveHistory = true);
   void logo();
   void drawStartupIntroFrame(uint32_t elapsedMs);
   void Bootloader();
@@ -56,6 +57,7 @@ class Window {
   void updateLive(TelemetryData *data, Navigation *navigation, TelemetryInfo *info, int16_t index);
   void updateLive(TelemetryData *data, Navigation *navigation, int16_t index);
   void UpdateLiveState(TelemetryData *data1, TelemetryData *data2, Navigation *navigation, LiveState state);
+  bool updateLiveNavigation(const TelemetryData &data1, const TelemetryData &data2, Navigation *navigation);
 
   void initRecovery(bool hasLastLocation);
   void updateRecovery(Navigation *navigation, bool hasLastLocation);
@@ -77,6 +79,12 @@ class Window {
   void initDataOptions(const char *logName, bool active);
   void initDataMessage(const char *title, const char *message);
   void initUsbStorage(bool active);
+  void initFirmwareUpdate(int16_t index);
+  void initRadioUpdateList();
+  void radioUpdateFileName(const char *filename, uint8_t row, bool selected);
+  void initRadioUpdateConfirm(const char *filename, uint32_t size, uint32_t crc);
+  void radioUpdateProgress(const char *phase, uint8_t link, uint8_t percent);
+  void radioUpdateResult(bool success, const char *message, const char *version1, const char *version2);
 
   void initSensors();
   void initSensorPrepareCalibrate();
@@ -84,12 +92,17 @@ class Window {
   void updateSensorCalibrate(Navigation *navigation);
   void initSensorCalibrateDone();
   void updateSensors(Navigation *navigation);
+  void initSensorOrientation();
+  void updateSensorOrientation(Navigation *navigation);
 
   void initSettings(int16_t submenuIdx);
+  void drawSelfTest(const SelfTest &test, uint32_t now, int16_t selectedResult);
   void updateSettings(int16_t index);
+  void settingsVersions(const char *telemetry1, const char *telemetry2);
   void drawSettingsTriangles(int16_t submenuIdx, int16_t color);
 
   void initBox(const char *text);
+  void initLiveConfirmExit();
 
   void initKeyboard(char *text, uint32_t maxLength = 0);
   void drawKeyboard(char *text, int32_t keyHighlight, bool uppercase, uint32_t maxLength = 0);
@@ -106,8 +119,33 @@ class Window {
   static constexpr uint8_t kUnderscoreIdx = 37;
 
  private:
-  void updateLiveData(TelemetryData *data, Navigation *navigation, int16_t index, uint16_t color);
-  void updateLiveInfo(TelemetryInfo *info, int16_t index, uint16_t color);
+  enum class DescentPhase : uint8_t { None, Main, Drogue, Ballistic };
+  struct PhaseStabilizer {
+    DescentPhase phase = DescentPhase::None;
+    DescentPhase candidate = DescentPhase::None;
+    uint16_t lastTimestamp = 0;
+    uint16_t candidateSinceTimestamp = 0;
+    uint32_t lastSampleMs = 0;
+    uint32_t candidateSinceMs = 0;
+    bool hasSample = false;
+  };
+  struct TrendSample {
+    uint32_t timeMs;
+    float value;
+  };
+  struct TrendHistory {
+    TrendSample samples[12]{};
+    uint8_t count = 0;
+    uint8_t next = 0;
+  };
+  void updateLiveData(TelemetryData *data, int16_t index, uint16_t color);
+  bool updateLiveInfo(TelemetryInfo *info, int16_t index);
+  bool updateLiveDescent(TelemetryData &data, size_t index, bool hasRange, float distanceM);
+  float updateTrendHistory(TrendHistory &history, float value, uint32_t now);
+  void drawLiveTrendIcon(int16_t x, int16_t y, int8_t trend);
+  void drawLivePhaseIcon(int16_t x, int16_t y, DescentPhase phase);
+  void drawCoordinate(float value, char positiveHemisphere, char negativeHemisphere, int16_t x, int16_t baseline,
+                      uint16_t color, bool valid);
   void drawCentreString(const char *buf, int16_t x, int16_t y);
   void drawCentreString(String &buf, int16_t x, int16_t y);
   void drawPageHeader(const char *title, bool hasPreviousPage, bool hasNextPage);
@@ -132,7 +170,6 @@ class Window {
   Config &config;
   IClock &clock;
 
-  bool connected[2]{};
   uint32_t lastTeleData[2]{};
   uint32_t dataAge[2]{};
   topBarData barData{};
@@ -143,11 +180,18 @@ class Window {
   bool oldBarRecorderFault = false;
   uint32_t oldBarFreeMemory = 0;
   bool barBlinkStatus = false;
+  bool barNeedsRedraw = false;
   TelemetryData teleData[2]{};
   TelemetryInfo infoData[2]{};
-  LiveState livestate{LiveState::kShowGnss};
-  float old_bearing[2] = {0.0F, 0.0F};
-  int32_t old_downrange[2] = {0, 0};
+  LiveState livestate{LiveState::kShowDownRange};
+  char liveNavigationText[2][2][24]{};
+  bool hasLiveData[2]{};
+  char liveInfoText[2][32]{};
+  char liveDescentText[2][40]{};
+  TrendHistory rangeHistory[2]{};
+  PhaseStabilizer phaseStabilizer[2]{};
+  int8_t liveRangeTrend[2]{3, 3};
+  DescentPhase livePhaseIcon[2]{};
 
   int16_t oldSettingsIndex{0};
   int16_t subMenuSettingIndex{0};
@@ -157,7 +201,5 @@ class Window {
   bool upperCase{false};
   int32_t oldKey{0};
   uint32_t keyboardTextMaxLength{0};
-  float oldCalibrationPercentage = 0.0F;
-
   const char *eventName[9] = {"Ready", "Liftoff", "Burnout", "Apogee", "Main", "Touchdown", "Custom 1", "Custom 2"};
 };

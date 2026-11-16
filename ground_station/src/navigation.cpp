@@ -3,11 +3,67 @@
 /// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "navigation.hpp"
+
+#include <Preferences.h>
 #include "config.hpp"
 #include "console.hpp"
 #include "utils.hpp"
 
-constexpr uint8_t NAVIGATION_TASK_FREQUENCY = 50;
+constexpr uint8_t NAVIGATION_TASK_FREQUENCY = AttitudeFilter::sampleRateHz;
+
+namespace {
+// The compass library intentionally remains unchanged. Factory diagnostics use
+// checked reads on the navigation task, the sole owner of the sensor bus.
+bool readSensorRegisters(uint8_t address, uint8_t reg, uint8_t *bytes, uint8_t count) {
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(address, count) != count) return false;
+  for (uint8_t i = 0; i < count; ++i) bytes[i] = static_cast<uint8_t>(Wire.read());
+  return true;
+}
+uint8_t detectSelfTestCompass() {
+  uint8_t id = 0;
+  if (readSensorRegisters(0x0d, 0x0d, &id, 1) && id == 0xff) return 0x0d;
+  if (readSensorRegisters(0x2c, 0x00, &id, 1) && id == 0x80) return 0x2c;
+  return 0;
+}
+}  // namespace
+
+SelfTestSensorObservation Navigation::selfTestSensors() const {
+  portENTER_CRITICAL(&sensorMux);
+  const auto copy = sensorObservation;
+  portEXIT_CRITICAL(&sensorMux);
+  return copy;
+}
+
+Attitude Navigation::getAttitude() const {
+  portENTER_CRITICAL(&sensorMux);
+  const auto copy = attitude;
+  portEXIT_CRITICAL(&sensorMux);
+  return copy;
+}
+
+bool Navigation::saveGyroCalibration(const std::array<float, 3> &bias) {
+  if (!std::all_of(bias.begin(), bias.end(), [](float value) {
+        return std::isfinite(value) && std::fabs(value) <= SelfTestProfile::kMaximumGyroBias;
+      }))
+    return false;
+  // Factory offsets live in NVS, independently of the user-editable USB filesystem.
+  Preferences preferences;
+  if (!preferences.begin("cats-gyro", false)) return false;
+  std::array<float, 3> verified{};
+  const bool saved = preferences.putBytes("bias-v1", bias.data(), sizeof(bias)) == sizeof(bias) &&
+                     preferences.getBytes("bias-v1", verified.data(), sizeof(verified)) == sizeof(verified) &&
+                     verified == bias;
+  preferences.end();
+  if (!saved) return false;
+  portENTER_CRITICAL(&sensorMux);
+  gyroBias = bias;
+  resetAttitude = true;
+  portEXIT_CRITICAL(&sensorMux);
+  return true;
+}
 
 bool Navigation::begin() {
   initialized = true;
@@ -16,11 +72,24 @@ bool Navigation::begin() {
 
   compass->init();
 
-  if (imu.begin(Wire, 0x6A) != 1) {
+  imuDetected = imu.begin(Wire, 0x6A) == 1;
+  if (!imuDetected) {
     console.warning.println("IMU init failed!");
   }
 
-  filter.begin(NAVIGATION_TASK_FREQUENCY);
+  Preferences preferences;
+  if (preferences.begin("cats-gyro", true)) {
+    std::array<float, 3> saved{};
+    if (preferences.getBytesLength("bias-v1") == sizeof(saved) &&
+        preferences.getBytes("bias-v1", saved.data(), sizeof(saved)) == sizeof(saved) &&
+        std::all_of(saved.begin(), saved.end(), [](float value) {
+          return std::isfinite(value) && std::fabs(value) <= SelfTestProfile::kMaximumGyroBias;
+        }))
+      gyroBias = saved;
+    preferences.end();
+  }
+
+  filter.reset();
 
   calibration = CALIB_CONCLUDED;
 
@@ -161,22 +230,74 @@ void Navigation::navigationTask(void *pvParameter) {
   TickType_t task_last_tick = xTaskGetTickCount();
 
   uint32_t count = 0;
+  bool wasSampling = false;
+  uint8_t compassAddress = 0;
+  uint32_t sensorSequence = 0;
 
   ref->get_saved_calib();
   ref->initFibonacciSphere();
 
   while (ref->initialized) {
+    const bool sampling = ref->selfTestSampling.load();
+    SelfTestSensorObservation sample{};
+    if (sampling) {
+      if (!wasSampling) compassAddress = detectSelfTestCompass();
+      sample.imuDetected = ref->imuDetected;
+      sample.magnetometer = compassAddress;
+      sample.accelerationFresh = ref->imu.accelerationAvailable() != 0;
+      sample.gyroFresh = ref->imu.gyroscopeAvailable() != 0;
+      uint8_t bytes[6]{};
+      sample.magnetometerFresh =
+          compassAddress != 0 &&
+          readSensorRegisters(compassAddress, compassAddress == 0x0d ? 0x00 : 0x01, bytes, sizeof(bytes));
+      if (sample.magnetometerFresh) {
+        for (size_t i = 0; i < 3; ++i) {
+          sample.magnetic[i] = static_cast<float>(static_cast<int16_t>(bytes[i * 2] | (bytes[i * 2 + 1] << 8U)));
+        }
+      }
+      sample.readError = !sample.magnetometerFresh;
+    }
+    wasSampling = sampling;
     ref->compass->read();
 
     ref->compass->readRaw(ref->raw_m);
     ref->transform(ref->raw_m, ref->m);
 
-    ref->imu.readAcceleration(ref->ax, ref->ay, ref->az);
-    ref->imu.readGyroscope(ref->gx, ref->gy, ref->gz);
+    const bool accelerationRead = ref->imu.readAcceleration(ref->ax, ref->ay, ref->az) != 0;
+    const bool gyroRead = ref->imu.readGyroscope(ref->gx, ref->gy, ref->gz) != 0;
+    const std::array<float, 3> rawGyro{ref->gx, ref->gy, ref->gz};
+    portENTER_CRITICAL(&ref->sensorMux);
+    const auto bias = ref->gyroBias;
+    const bool resetAttitude = ref->resetAttitude;
+    ref->resetAttitude = false;
+    portEXIT_CRITICAL(&ref->sensorMux);
+    if (resetAttitude) ref->filter.reset();
+    ref->gx -= bias[0];
+    ref->gy -= bias[1];
+    ref->gz -= bias[2];
+    if (sampling) {
+      sample.accelerationFresh &= accelerationRead;
+      sample.gyroFresh &= gyroRead;
+      sample.readError |= !accelerationRead || !gyroRead;
+      sample.acceleration = {ref->ax, ref->ay, ref->az};
+      sample.gyro = {ref->gx, ref->gy, ref->gz};
+      sample.rawGyro = rawGyro;
+      sample.sequence = ++sensorSequence;
+      sample.sampledAtMs = millis();
+      portENTER_CRITICAL(&ref->sensorMux);
+      ref->sensorObservation = sample;
+      portEXIT_CRITICAL(&ref->sensorMux);
+    }
 
-    ref->filter.update(ref->gy, ref->gx, -ref->gz, ref->ay, ref->ax, -ref->az, -ref->m[0], ref->m[1], -ref->m[2]);
-
-    ref->filter.getQuaternion(&ref->q0, &ref->q1, &ref->q2, &ref->q3);
+    // Do not integrate stale samples after a failed IMU read. Publish only the
+    // angles; the filter's mutable state stays on this task.
+    if (accelerationRead && gyroRead) {
+      const auto attitude = ref->filter.update({ref->gx, ref->gy, ref->gz}, {ref->ax, ref->ay, ref->az},
+                                               {ref->m[0], ref->m[1], ref->m[2]});
+      portENTER_CRITICAL(&ref->sensorMux);
+      ref->attitude = attitude;
+      portEXIT_CRITICAL(&ref->sensorMux);
+    }
 
     if (ref->calibration == CALIB_ONGOING) {
       ref->calibrate(ref->raw_m);
@@ -187,6 +308,7 @@ void Navigation::navigationTask(void *pvParameter) {
         ref->setCalibrationState(CALIB_CONCLUDED);
         ref->mag_calib = ref->mag_calib_temp;
         ref->set_saved_calib(ref->mag_calib);
+        ref->filter.reset();
         ref->resetCalib();
       }
 

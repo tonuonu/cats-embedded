@@ -36,11 +36,18 @@ class Link final : public ITelemetryLink {
   void disable() override { value.enabled = false; }
   void setLinkPhrase(const std::string& phrase) override { linkPhrase = phrase; }
   void setTestingPhrase(const std::string& phrase) override { testingPhrase = phrase; }
+  void requestVersion() override {
+    if (!versionReply.empty()) {
+      value.firmwareVersion = versionReply;
+      ++value.versionReplies;
+    }
+  }
 
   LinkSnapshot value{};
   uint8_t lastEvent = 0;
   std::string linkPhrase;
   std::string testingPhrase;
+  std::string versionReply = "1.1.3";
 };
 
 class Navigation final : public INavigation {
@@ -80,7 +87,7 @@ class Logs final : public ILogStore {
       }
       return;
     }
-    if (sample.state <= 2) return;
+    if (sample.state <= 2 || (activeIndex < 0 && sample.state >= 7)) return;
     if (failWrite) {
       status.state = "fault";
       status.lastError = "Injected write failure";
@@ -122,6 +129,20 @@ class Logs final : public ILogStore {
     touchdownMask = 0;
     status.state = "idle";
     status.activeFilename.clear();
+    return true;
+  }
+
+  bool startLiveRecording() override {
+    if (activeIndex >= 0) return false;
+    armed = true;
+    touchdownMask = rearmMask = completedParticipants = 0;
+    status = RecorderSnapshot{};
+    return true;
+  }
+  bool stopLiveRecording(bool onlyIfIdle = false, bool* needsConfirmation = nullptr) override {
+    if (needsConfirmation != nullptr) *needsConfirmation = onlyIfIdle && activeIndex >= 0;
+    if (activeIndex >= 0) return !onlyIfIdle && finalize();
+    status.state = "idle";
     return true;
   }
 
@@ -337,6 +358,12 @@ class Device final : public IDeviceStatus {
     return true;
   }
   void requestFirmwareStorage() override { value.usbStorageState = "firmware"; }
+  bool saveGyroCalibration(const std::array<float, 3>& bias) override {
+    if (value.selfTestGyroSaveFailure) return false;
+    value.gyroBias = bias;
+    ++value.gyroSaveCount;
+    return true;
+  }
   DeviceStatusSnapshot value;
 };
 
@@ -435,6 +462,9 @@ bool stringField(const char* json, const char* key, std::string& output) {
 void updateLink(Link& link, const char* json) {
   int32_t integer = 0;
   bool boolean = false;
+  if (stringField(json, "firmwareVersion", link.versionReply)) {
+    link.versionReply.resize(std::min<size_t>(16, link.versionReply.size()));
+  }
   if (numberField(json, "state", integer)) link.value.telemetry.state = static_cast<uint8_t>(integer);
   if (numberField(json, "errors", integer)) link.value.telemetry.errors = static_cast<uint8_t>(integer);
   if (numberField(json, "altitudeM", integer)) link.value.telemetry.altitudeM = integer;
@@ -456,6 +486,8 @@ void updateLink(Link& link, const char* json) {
     link.value.telemetry.updated = true;
     link.value.info.updated = true;
   }
+  if (link.value.telemetry.updated) link.value.telemetry.lastUpdateMs = virtualClock.now;
+  if (link.value.info.updated) link.value.info.lastUpdateMs = virtualClock.now;
 }
 
 std::string quote(const std::string& value) {
@@ -471,13 +503,33 @@ std::string quote(const std::string& value) {
 void rebuildSnapshot() {
   const HmiSnapshot state = controller.snapshot();
   snapshot = "{\"activeScreen\":" + quote(state.screen) +
+             ",\"selfTestPhase\":" + std::to_string(static_cast<unsigned>(state.selfTest.phase)) +
+             ",\"selfTestWaiting\":" + std::string(state.selfTest.awaitingConfirmation ? "true" : "false") +
+             ",\"selfTestResult\":" + quote(SelfTest::resultName(state.selfTest.overall())) +
+             ",\"selfTestRadioStage\":" + std::to_string(state.selfTest.radioStage) +
+             ",\"selfTestButtons\":" + std::to_string(state.selfTest.completedButtons) +
+             ",\"gyroBias\":[" + std::to_string(state.device.gyroBias[0]) + "," +
+                std::to_string(state.device.gyroBias[1]) + "," + std::to_string(state.device.gyroBias[2]) + "]" +
+             ",\"gyroSaveCount\":" + std::to_string(state.device.gyroSaveCount) +
+             ",\"selfTestChecks\":[" + [&state]() {
+               std::string output;
+               for (const auto& result : state.selfTest.results) {
+                 if (!output.empty()) output += ',';
+                 output += quote(SelfTest::resultName(result.result));
+               }
+               return output;
+             }() + "]" +
              ",\"liveView\":" + quote(state.liveView) +
+             ",\"liveExitState\":" + quote(state.liveExitState) +
+             ",\"sensorView\":" + quote(state.sensorView) +
              ",\"testingState\":" + quote(state.testingState) +
              ",\"testingSelection\":" + std::to_string(state.testingSelection) +
              ",\"keyboardSelection\":" + std::to_string(state.keyboardSelection) +
              ",\"keyboardUppercase\":" + std::string(state.keyboardUppercase ? "true" : "false") +
              ",\"calibrationState\":" + quote(state.calibrationState) +
              ",\"settingsState\":" + quote(state.settingsState) +
+             ",\"telemetryVersion1\":" + quote(state.settingsVersions[0]) +
+             ",\"telemetryVersion2\":" + quote(state.settingsVersions[1]) +
              ",\"dataStatistics\":" + std::string(state.dataStatistics ? "true" : "false") +
              ",\"currentDataSubview\":" + quote(state.currentDataSubview) +
              ",\"dataSelection\":" + std::to_string(state.dataSelection) +
@@ -490,6 +542,10 @@ void rebuildSnapshot() {
              ",\"menuSelection\":" + std::to_string(state.menuSelection) +
              ",\"settingsPage\":" + std::to_string(state.settingsPage) +
              ",\"settingsSelection\":" + std::to_string(state.settingsSelection) +
+             ",\"firmwareUpdateSelection\":" + std::to_string(state.firmwareUpdateSelection) +
+             ",\"radioUpdateState\":" + quote(state.radioUpdateState) +
+             ",\"radioUpdateLink\":" + std::to_string(state.radioUpdateLink) +
+             ",\"radioUpdatePercent\":" + std::to_string(state.radioUpdatePercent) +
              ",\"recorderState\":" + quote(state.recorder.state) +
              ",\"activeFilename\":" + quote(state.recorder.activeFilename) +
              ",\"recordedRowCount\":" + std::to_string(state.recorder.writtenRows) +
@@ -513,6 +569,22 @@ void rebuildSnapshot() {
              ",\"linkPhrase1\":" + quote(state.configuration.linkPhrase1) +
              ",\"linkPhrase2\":" + quote(state.configuration.linkPhrase2) +
              ",\"testingPhrase\":" + quote(state.configuration.testingPhrase) + "}" +
+             ",\"navigation\":{\"homeLatitude\":" + std::to_string(state.navigation.homeLatitude) +
+             ",\"homeLongitude\":" + std::to_string(state.navigation.homeLongitude) +
+             ",\"rocketLatitude\":" + std::to_string(state.navigation.rocketLatitude) +
+             ",\"rocketLongitude\":" + std::to_string(state.navigation.rocketLongitude) +
+             ",\"northRad\":" + std::to_string(state.navigation.northRad) +
+             ",\"pitchRad\":" + std::to_string(state.navigation.pitchRad) +
+             ",\"rollRad\":" + std::to_string(state.navigation.rollRad) +
+             ",\"ax\":" + std::to_string(state.navigation.ax) +
+             ",\"ay\":" + std::to_string(state.navigation.ay) +
+             ",\"az\":" + std::to_string(state.navigation.az) +
+             ",\"gx\":" + std::to_string(state.navigation.gx) +
+             ",\"gy\":" + std::to_string(state.navigation.gy) +
+             ",\"gz\":" + std::to_string(state.navigation.gz) +
+             ",\"mx\":" + std::to_string(state.navigation.mx) +
+             ",\"my\":" + std::to_string(state.navigation.my) +
+             ",\"mz\":" + std::to_string(state.navigation.mz) + "}" +
              ",\"framebufferRevision\":" + std::to_string(state.framebufferRevision) +
              ",\"actions\":[";
   for (size_t index = 0; index < state.actions.size(); ++index) {
@@ -528,6 +600,7 @@ void step() { controller.step(input, virtualClock.now); }
 
 void resetState(bool skipStartup, bool preserveConfiguration = false) {
   const GsConfigSnapshot savedConfiguration = configStore.value;
+  const auto savedGyroBias = device.value.gyroBias;
   virtualClock.now = 0;
   virtualClock.hourValue = 0;
   virtualClock.minuteValue = 0;
@@ -539,8 +612,11 @@ void resetState(bool skipStartup, bool preserveConfiguration = false) {
   configStore = ConfigStore{};
   if (preserveConfiguration) configStore.value = savedConfiguration;
   device = Device{};
+  if (preserveConfiguration) device.value.gyroBias = savedGyroBias;
   controller.start();
   if (skipStartup) {
+    virtualClock.now = 20;
+    step();
     virtualClock.now = StartupIntro::kDurationMs;
     step();
   }
@@ -600,11 +676,22 @@ void gs_set_navigation_json(const char* json) {
   if (numberField(json, "calibrationPercentage", integer)) navigation.value.calibrationPercentage = static_cast<float>(integer);
   (void)decimalField(json, "distanceM", navigation.value.distanceM);
   (void)decimalField(json, "northRad", navigation.value.northRad);
+  (void)decimalField(json, "pitchRad", navigation.value.pitchRad);
+  (void)decimalField(json, "rollRad", navigation.value.rollRad);
   (void)decimalField(json, "homeLatitude", navigation.value.homeLatitude);
   (void)decimalField(json, "homeLongitude", navigation.value.homeLongitude);
   (void)decimalField(json, "rocketLatitude", navigation.value.rocketLatitude);
   (void)decimalField(json, "rocketLongitude", navigation.value.rocketLongitude);
   (void)decimalField(json, "azimuthRad", navigation.value.azimuthRad);
+  (void)decimalField(json, "ax", navigation.value.ax);
+  (void)decimalField(json, "ay", navigation.value.ay);
+  (void)decimalField(json, "az", navigation.value.az);
+  (void)decimalField(json, "gx", navigation.value.gx);
+  (void)decimalField(json, "gy", navigation.value.gy);
+  (void)decimalField(json, "gz", navigation.value.gz);
+  (void)decimalField(json, "mx", navigation.value.mx);
+  (void)decimalField(json, "my", navigation.value.my);
+  (void)decimalField(json, "mz", navigation.value.mz);
   step();
   rebuildSnapshot();
 }
@@ -621,6 +708,14 @@ void gs_set_device_status_json(const char* json) {
   if (!device.value.usb && device.value.usbStorageState == "host") device.value.usbStorageState = "firmware";
   (void)stringField(json, "usbStorageState", device.value.usbStorageState);
   if (booleanField(json, "gnss", boolean)) device.value.gnss = boolean;
+  if (booleanField(json, "selfTestGnss", boolean)) device.value.selfTestGnss = boolean;
+  if (booleanField(json, "selfTestSensorFailure", boolean)) device.value.selfTestSensorFailure = boolean;
+  if (booleanField(json, "selfTestStorageFailure", boolean)) device.value.selfTestStorageFailure = boolean;
+  if (numberField(json, "selfTestMissingReceiver", integer)) device.value.selfTestMissingReceiver = static_cast<uint8_t>(integer);
+  if (numberField(json, "selfTestLq", integer)) device.value.selfTestLq = static_cast<uint8_t>(integer);
+  if (numberField(json, "selfTestSnr", integer)) device.value.selfTestSnr = static_cast<int8_t>(integer);
+  if (numberField(json, "usbReadCount", integer)) device.value.usbReadCount = static_cast<uint32_t>(integer);
+  if (booleanField(json, "selfTestGyroSaveFailure", boolean)) device.value.selfTestGyroSaveFailure = boolean;
   if (booleanField(json, "recorderWriteFailure", boolean)) logs.failWrite = boolean;
   if (booleanField(json, "deleteFailure", boolean)) logs.failDelete = boolean;
   if (booleanField(json, "finalizeFailure", boolean)) logs.failFinalize = boolean;
@@ -635,6 +730,9 @@ void gs_set_configuration_json(const char* json) {
   if (booleanField(json, "startupAnimation", boolean)) configStore.value.startupAnimation = boolean;
   if (booleanField(json, "dualReceiver", boolean)) configStore.value.dualReceiver = boolean;
   if (booleanField(json, "imperialUnits", boolean)) configStore.value.imperialUnits = boolean;
+  (void)stringField(json, "linkPhrase1", configStore.value.linkPhrase1);
+  (void)stringField(json, "linkPhrase2", configStore.value.linkPhrase2);
+  (void)stringField(json, "testingPhrase", configStore.value.testingPhrase);
   rebuildSnapshot();
 }
 void gs_set_logs_json(const char* json) {

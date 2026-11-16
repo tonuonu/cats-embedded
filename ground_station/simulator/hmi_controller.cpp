@@ -5,6 +5,7 @@
 #include "hmi_controller.hpp"
 
 #include "hmi/location_qr.hpp"
+#include "hmi/settings.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,24 +37,37 @@ void HmiController::start() {
   menuSelection_ = 0;
   settingsPage_ = 0;
   settingsSelection_ = -1;
+  versionLastRequest_ = nowMs_ - 1000U;
+  versionReadsComplete_ = {};
+  settingsVersions_ = {"Reading...", "Reading..."};
   dataSelection_ = 0;
   testingSelection_ = 0;
   dataSubview_ = DataSubview::List;
   logScrollOffset_ = 0;
   recoveryLocations_ = {};
   clearQr();
-  liveDownrange_ = false;
+  liveDownrange_ = true;
+  liveExitState_ = "none";
+  sensorOrientation_ = false;
   keyboardActive_ = false;
   keyboardSelection_ = 0;
   keyboardUppercase_ = false;
+  usbStorageSession_ = false;
+  usbStorageMessage_.clear();
   usbPreviouslyConnected_ = false;
   automaticUsbSharePending_ = false;
   previousRecorderState_ = logs_.recorderStatus().state;
+  firmwareUpdateSelection_ = 0;
+  radioUpdateState_ = "browse";
+  radioUpdateStartedMs_ = 0;
   input_ = {};
   previousInput_ = {};
   heldSince_.fill(0);
   lastRepeat_.fill(0);
   actions_.clear();
+  selfTest_ = SelfTest{};
+  selfTestInput_ = {};
+  selfTestResultIndex_ = 0;
   renderer_.begin();
   render();
 }
@@ -63,9 +77,29 @@ void HmiController::step(const HmiInput& input, uint64_t nowMs) {
   previousInput_ = input_;
   input_ = input;
 
+  // Model the telemetry tasks' bounded startup reads, independently of the current screen.
+  ITelemetryLink* links[] = {&link1_, &link2_};
+  const bool requestVersion = nowMs_ > startupStartedMs_ && nowMs_ - versionLastRequest_ >= 1000U;
+  for (size_t i = 0; i < 2; ++i) {
+    const auto link = links[i]->snapshot();
+    if (!versionReadsComplete_[i]) {
+      if (link.versionReplies != 0 || nowMs_ - startupStartedMs_ >= 8000U) {
+        versionReadsComplete_[i] = true;
+      } else if (requestVersion) {
+        links[i]->requestVersion();
+        emit("version_requested", static_cast<uint8_t>(i + 1));
+      }
+    }
+    settingsVersions_[i] = link.versionReplies != 0 ? link.firmwareVersion
+        : (versionReadsComplete_[i] ? "No response" : "Reading...");
+  }
+  if (requestVersion) versionLastRequest_ = nowMs_;
+
   updateRecoveryLocations();
-  ingestTelemetry();
-  updateAutomaticUsbStorage();
+  if (screen_ != Screen::SelfTest) {
+    ingestTelemetry();
+    updateAutomaticUsbStorage();
+  }
 
   for (size_t i = 0; i < input_.held.size(); ++i) {
     if (input_.held[i] && !previousInput_.held[i]) {
@@ -102,9 +136,17 @@ void HmiController::step(const HmiInput& input, uint64_t nowMs) {
     case Screen::Settings:
       settingsStep(nowMs_);
       break;
+    case Screen::SelfTest:
+      selfTestStep(nowMs_);
+      break;
+    case Screen::FirmwareUpdate:
+      firmwareUpdateStep();
+      break;
+    case Screen::RadioUpdate:
+      radioUpdateStep();
+      break;
     case Screen::Recovery:
-      if (qrView_ == "none" && config_.config().dualReceiver &&
-          (pressed(HmiButton::Up) || pressed(HmiButton::Down))) {
+      if (qrView_ == "none" && config_.config().dualReceiver && (pressed(HmiButton::Up) || pressed(HmiButton::Down))) {
         selectedRecoveryLink_ = static_cast<int8_t>(1 - selectedRecoveryLink_);
       }
       if (pressed(HmiButton::Right)) {
@@ -134,7 +176,8 @@ void HmiController::step(const HmiInput& input, uint64_t nowMs) {
       break;
     case Screen::Bootloader:
       if (pressed(HmiButton::Back)) {
-        enter(Screen::Settings);
+        firmwareUpdateSelection_ = 0;
+        enter(Screen::FirmwareUpdate);
       }
       break;
     case Screen::UsbStorage: {
@@ -143,24 +186,18 @@ void HmiController::step(const HmiInput& input, uint64_t nowMs) {
         usbStorageSession_ = false;
         emit("usb_storage_reclaimed");
         enter(Screen::Settings);
-        settingsPage_ = 0;
-        settingsSelection_ = 2;
       } else if (usbStorageSession_ && storageState == "fault") {
         usbStorageSession_ = false;
         usbStorageMessage_ = "Storage could not be remounted.";
       } else if (usbStorageSession_ && storageState == "host" && pressed(HmiButton::Back)) {
         usbStorageSession_ = false;
         enter(Screen::Settings);
-        settingsPage_ = 0;
-        settingsSelection_ = 2;
       } else if (usbStorageSession_ &&
                  ((storageState == "host" && pressed(HmiButton::Ok)) ||
                   (storageState == "preparing" && pressed(HmiButton::Back)))) {
         device_.requestFirmwareStorage();
       } else if (!usbStorageSession_ && pressed(HmiButton::Back)) {
         enter(Screen::Settings);
-        settingsPage_ = 0;
-        settingsSelection_ = 2;
       }
       break;
     }
@@ -190,23 +227,35 @@ bool HmiController::repeated(HmiButton button, uint64_t nowMs) {
 }
 
 void HmiController::enter(Screen screen) {
+  const bool returningToSettings = screen_ == Screen::UsbStorage || screen_ == Screen::SelfTest ||
+                                   screen_ == Screen::Bootloader || screen_ == Screen::FirmwareUpdate ||
+                                   screen_ == Screen::RadioUpdate;
   screen_ = screen;
   clearQr();
+  if (screen_ == Screen::Live) {
+    liveDownrange_ = true;
+    liveExitState_ = logs_.startLiveRecording() ? "none" : "start_failed";
+  }
   if (screen_ == Screen::Testing) {
     testingState_ = TestingState::Disclaimer;
     testingSelection_ = 0;
   }
   if (screen_ == Screen::Sensors) {
     calibrationState_ = CalibrationState::Idle;
+    sensorOrientation_ = false;
   }
   if (screen_ == Screen::Settings) {
-    settingsPage_ = 0;
-    settingsSelection_ = -1;
+    if (!returningToSettings) {
+      settingsPage_ = SETTING_TELEMETRY;
+      settingsSelection_ = -1;
+    }
     keyboardActive_ = false;
   }
   if (screen_ == Screen::Recovery) {
-    const bool link1Valid = LocationQr::IsValid(recoveryLocations_[0].lastLatitude, recoveryLocations_[0].lastLongitude);
-    const bool link2Valid = LocationQr::IsValid(recoveryLocations_[1].lastLatitude, recoveryLocations_[1].lastLongitude);
+    const bool link1Valid =
+        LocationQr::IsValid(recoveryLocations_[0].lastLatitude, recoveryLocations_[0].lastLongitude);
+    const bool link2Valid =
+        LocationQr::IsValid(recoveryLocations_[1].lastLatitude, recoveryLocations_[1].lastLongitude);
     selectedRecoveryLink_ = link1Valid ? 0 : (link2Valid ? 1 : 0);
   }
   if (screen_ == Screen::Data) {
@@ -216,8 +265,10 @@ void HmiController::enter(Screen screen) {
     }
     dataSubview_ = DataSubview::List;
     const auto entries = logs_.listLogs();
-    if (entries.empty()) dataSelection_ = 0;
-    else dataSelection_ = std::min<int16_t>(dataSelection_, static_cast<int16_t>(entries.size() - 1U));
+    if (entries.empty())
+      dataSelection_ = 0;
+    else
+      dataSelection_ = std::min<int16_t>(dataSelection_, static_cast<int16_t>(entries.size() - 1U));
   }
 }
 
@@ -245,16 +296,50 @@ void HmiController::menuStep(uint64_t nowMs) {
 }
 
 void HmiController::liveStep(uint64_t nowMs) {
-  if (pressed(HmiButton::Left)) {
+  if (liveExitState_ == "start_failed" || liveExitState_ == "stop_failed") {
+    if (pressed(HmiButton::Back)) {
+      if (liveExitState_ == "start_failed") {
+        if (logs_.stopLiveRecording()) enter(Screen::Menu);
+      } else {
+        liveExitState_ = "none";
+        liveDownrange_ = true;
+      }
+    }
+    return;
+  }
+  if (liveExitState_ == "confirm") {
+    if (pressed(HmiButton::Back)) {
+      liveExitState_ = "none";
+      liveDownrange_ = true;
+    } else if (pressed(HmiButton::Ok)) {
+      if (!logs_.stopLiveRecording()) {
+        liveExitState_ = "stop_failed";
+      } else {
+        automaticUsbSharePending_ = device_.snapshot().usb;
+        enter(Screen::Menu);
+      }
+    }
+    return;
+  }
+  if (pressed(HmiButton::Back)) {
+    bool needsConfirmation = false;
+    if (logs_.stopLiveRecording(true, &needsConfirmation)) {
+      automaticUsbSharePending_ = device_.snapshot().usb;
+      enter(Screen::Menu);
+    } else if (needsConfirmation) {
+      liveExitState_ = "confirm";
+    } else {
+      liveExitState_ = "stop_failed";
+    }
+    return;
+  }
+  if (pressed(HmiButton::Right)) {
     liveDownrange_ = false;
     emit("live_view", 0, 0, "gnss");
   }
-  if (pressed(HmiButton::Right)) {
+  if (pressed(HmiButton::Left)) {
     liveDownrange_ = true;
     emit("live_view", 0, 0, "downrange");
-  }
-  if (pressed(HmiButton::Back)) {
-    enter(Screen::Menu);
   }
   (void)nowMs;
 }
@@ -264,17 +349,21 @@ void HmiController::ingestTelemetry() {
   const auto first = link1_.snapshot();
   const auto second = link2_.snapshot();
   if (first.telemetry.updated) {
-    if (first.telemetry.state > 2 && device_.snapshot().usbStorageState != "firmware") {
+    if (screen_ == Screen::Live && first.telemetry.state > 2 &&
+        (first.telemetry.state < 7 || !logs_.recorderStatus().activeFilename.empty()) &&
+        device_.snapshot().usbStorageState != "firmware") {
       device_.requestFirmwareStorage();
     }
-    logs_.record(first.telemetry, 1);
+    if (screen_ == Screen::Live) logs_.record(first.telemetry, 1);
     link1_.clearUpdates();
   }
   if (second.telemetry.updated) {
-    if (second.telemetry.state > 2 && device_.snapshot().usbStorageState != "firmware") {
+    if (screen_ == Screen::Live && second.telemetry.state > 2 &&
+        (second.telemetry.state < 7 || !logs_.recorderStatus().activeFilename.empty()) &&
+        device_.snapshot().usbStorageState != "firmware") {
       device_.requestFirmwareStorage();
     }
-    logs_.record(second.telemetry, 2);
+    if (screen_ == Screen::Live) logs_.record(second.telemetry, 2);
     link2_.clearUpdates();
   }
 }
@@ -433,10 +522,11 @@ void HmiController::dataStep(uint64_t nowMs) {
     return;
   }
   if (dataSubview_ == DataSubview::Options) {
-    if (pressed(HmiButton::Back) || pressed(HmiButton::Up)) dataSubview_ = DataSubview::Details;
+    if (pressed(HmiButton::Back) || pressed(HmiButton::Up))
+      dataSubview_ = DataSubview::Details;
     else if (pressed(HmiButton::Ok) && dataSelection_ >= 0 && dataSelection_ < static_cast<int16_t>(logs.size())) {
-      dataSubview_ = logs[static_cast<size_t>(dataSelection_)].active ? DataSubview::ConfirmFinalize
-                                                                     : DataSubview::ConfirmDelete;
+      dataSubview_ =
+          logs[static_cast<size_t>(dataSelection_)].active ? DataSubview::ConfirmFinalize : DataSubview::ConfirmDelete;
     }
     return;
   }
@@ -455,7 +545,8 @@ void HmiController::dataStep(uint64_t nowMs) {
         const bool success = deleting ? logs_.remove(logs[static_cast<size_t>(dataSelection_)].name) : logs_.finalize();
         if (success) {
           const auto updated = logs_.listLogs();
-          dataSelection_ = updated.empty() ? 0 : std::min<int16_t>(dataSelection_, static_cast<int16_t>(updated.size() - 1U));
+          dataSelection_ =
+              updated.empty() ? 0 : std::min<int16_t>(dataSelection_, static_cast<int16_t>(updated.size() - 1U));
           logScrollOffset_ = std::min<size_t>(logScrollOffset_, static_cast<size_t>(dataSelection_));
           dataSubview_ = DataSubview::List;
         } else {
@@ -500,7 +591,7 @@ void HmiController::dataStep(uint64_t nowMs) {
 void HmiController::updateRecoveryLocations() {
   const std::array<LinkSnapshot, 2> links = {link1_.snapshot(), link2_.snapshot()};
   for (size_t index = 0; index < links.size(); ++index) {
-    const TelemetrySample &telemetry = links[index].telemetry;
+    const TelemetrySample& telemetry = links[index].telemetry;
     if (LocationQr::IsValid(telemetry.latitude, telemetry.longitude)) {
       recoveryLocations_[index].lastLatitude = telemetry.latitude;
       recoveryLocations_[index].lastLongitude = telemetry.longitude;
@@ -512,14 +603,22 @@ bool HmiController::showRecoveryLocation(size_t linkIndex) {
   if (linkIndex >= recoveryLocations_.size()) {
     return false;
   }
-  const FlightStatisticsSnapshot &location = recoveryLocations_[linkIndex];
-  const char *view = linkIndex == 0 ? "recovery_link_1" : "recovery_link_2";
+  const FlightStatisticsSnapshot& location = recoveryLocations_[linkIndex];
+  const char* view = linkIndex == 0 ? "recovery_link_1" : "recovery_link_2";
   return showQr(view, location.lastLatitude, location.lastLongitude);
 }
 
 void HmiController::sensorsStep(uint64_t nowMs) {
   switch (calibrationState_) {
     case CalibrationState::Idle:
+      if (pressed(HmiButton::Right) || pressed(HmiButton::Down)) {
+        sensorOrientation_ = true;
+        emit("sensor_view", 0, 1, "orientation");
+      }
+      if (pressed(HmiButton::Left) || pressed(HmiButton::Up)) {
+        sensorOrientation_ = false;
+        emit("sensor_view", 0, 0, "readings");
+      }
       if (pressed(HmiButton::Ok)) {
         calibrationState_ = CalibrationState::Prepare;
       }
@@ -535,6 +634,7 @@ void HmiController::sensorsStep(uint64_t nowMs) {
       }
       if (pressed(HmiButton::Back)) {
         calibrationState_ = CalibrationState::Idle;
+        sensorOrientation_ = false;
       }
       break;
     case CalibrationState::Calibrating:
@@ -551,6 +651,7 @@ void HmiController::sensorsStep(uint64_t nowMs) {
     case CalibrationState::Concluded:
       if (pressed(HmiButton::Ok) || pressed(HmiButton::Back)) {
         calibrationState_ = CalibrationState::Idle;
+        sensorOrientation_ = false;
         device_.requestFirmwareStorage();
         config_.save();
         automaticUsbSharePending_ = device_.snapshot().usb;
@@ -562,7 +663,6 @@ void HmiController::sensorsStep(uint64_t nowMs) {
 }
 
 void HmiController::settingsStep(uint64_t nowMs) {
-  const int16_t counts[3] = {4, 4, 3};
   if (keyboardActive_) {
     const bool moveRight = pressed(HmiButton::Right) || repeated(HmiButton::Right, nowMs);
     const bool moveLeft = pressed(HmiButton::Left) || repeated(HmiButton::Left, nowMs);
@@ -623,35 +723,43 @@ void HmiController::settingsStep(uint64_t nowMs) {
     return;
   }
   if (settingsSelection_ < 0) {
-    if (pressed(HmiButton::Right) && settingsPage_ < 2) {
+    if (pressed(HmiButton::Right) && settingsPage_ < kSettingPages - 1) {
       ++settingsPage_;
     }
     if (pressed(HmiButton::Left) && settingsPage_ > 0) {
       --settingsPage_;
     }
   } else {
+    const auto& setting = settingsTable[settingsPage_][settingsSelection_];
+    const auto action = setting.type == BUTTON ? setting.config.buttonAction : BUTTON_ACTION_NONE;
     const bool increment = pressed(HmiButton::Right) || repeated(HmiButton::Right, nowMs);
     const bool decrement = pressed(HmiButton::Left) || repeated(HmiButton::Left, nowMs);
-    if (settingsPage_ == 0 && settingsSelection_ == 0) {
+    if (settingsPage_ == SETTING_PREFERENCES && settingsSelection_ == 0) {
       if (increment) config_.config().neverStopLogging = true;
       if (decrement) config_.config().neverStopLogging = false;
-    } else if (settingsPage_ == 1 && settingsSelection_ == 0) {
+    } else if (settingsPage_ == SETTING_TELEMETRY && settingsSelection_ == 0) {
       if (increment) config_.config().dualReceiver = true;
       if (decrement) config_.config().dualReceiver = false;
-    } else if (settingsPage_ == 1 && settingsSelection_ >= 1 && settingsSelection_ <= 3 && pressed(HmiButton::Ok)) {
+    } else if (settingsPage_ == SETTING_TELEMETRY && settingsSelection_ >= 1 && settingsSelection_ <= 3 &&
+               (settingsSelection_ != 2 || config_.config().dualReceiver) && pressed(HmiButton::Ok)) {
       keyboardActive_ = true;
       keyboardSelection_ = 0;
       keyboardUppercase_ = false;
-    } else if (settingsPage_ == 2 && settingsSelection_ == 0) {
+    } else if (settingsPage_ == SETTING_PREFERENCES && settingsSelection_ == 1) {
       if (increment) config_.config().timeZoneOffset = std::min<int16_t>(12, config_.config().timeZoneOffset + 1);
       if (decrement) config_.config().timeZoneOffset = std::max<int16_t>(-12, config_.config().timeZoneOffset - 1);
-    } else if (settingsPage_ == 2 && settingsSelection_ == 1) {
+    } else if (settingsPage_ == SETTING_PREFERENCES && settingsSelection_ == 2) {
       if (pressed(HmiButton::Left) || pressed(HmiButton::Right)) config_.config().imperialUnits = !config_.config().imperialUnits;
-    } else if (settingsPage_ == 2 && settingsSelection_ == 2) {
+    } else if (settingsPage_ == SETTING_PREFERENCES && settingsSelection_ == 3) {
       if (increment) config_.config().startupAnimation = true;
       if (decrement) config_.config().startupAnimation = false;
     }
-    if (pressed(HmiButton::Ok) && settingsPage_ == 0 && settingsSelection_ == 2) {
+    if (pressed(HmiButton::Ok) && action == BUTTON_ACTION_UPDATE_FIRMWARE) {
+      firmwareUpdateSelection_ = 0;
+      enter(Screen::FirmwareUpdate);
+      return;
+    }
+    if (pressed(HmiButton::Ok) && action == BUTTON_ACTION_USB_STORAGE) {
       usbStorageMessage_.clear();
       const DeviceStatusSnapshot device = device_.snapshot();
       if (!device.usb) {
@@ -669,12 +777,15 @@ void HmiController::settingsStep(uint64_t nowMs) {
       enter(Screen::UsbStorage);
       return;
     }
-    if (pressed(HmiButton::Ok) && settingsPage_ == 0 && settingsSelection_ == 3) {
-      enter(Screen::Bootloader);
-      emit("bootloader_requested");
+    if (pressed(HmiButton::Ok) && action == BUTTON_ACTION_SELF_TEST) {
+      selfTest_ = SelfTest{};
+      selfTestInput_ = {};
+      selfTestResultIndex_ = 0;
+      enter(Screen::SelfTest);
+      return;
     }
   }
-  if (pressed(HmiButton::Down) && settingsSelection_ < counts[settingsPage_] - 1) {
+  if (pressed(HmiButton::Down) && settingsSelection_ < settingsTableValueCount[settingsPage_] - 1) {
     ++settingsSelection_;
   }
   if (pressed(HmiButton::Up) && settingsSelection_ > -1) {
@@ -693,6 +804,61 @@ void HmiController::settingsStep(uint64_t nowMs) {
       emit("configuration_saved");
       enter(Screen::Menu);
     }
+  }
+}
+
+void HmiController::firmwareUpdateStep() {
+  if (pressed(HmiButton::Down) && firmwareUpdateSelection_ < 1) {
+    ++firmwareUpdateSelection_;
+  }
+  if (pressed(HmiButton::Up) && firmwareUpdateSelection_ > 0) {
+    --firmwareUpdateSelection_;
+  }
+  if (pressed(HmiButton::Back)) {
+    enter(Screen::Settings);
+    settingsPage_ = SETTING_SYSTEM;
+    settingsSelection_ = 3;
+    return;
+  }
+  if (!pressed(HmiButton::Ok)) {
+    return;
+  }
+  if (firmwareUpdateSelection_ == 0) {
+    enter(Screen::Bootloader);
+    emit("bootloader_requested");
+    return;
+  }
+  radioUpdateState_ = "browse";
+  radioFirmwareSelection_ = 0;
+  radioUpdateStartedMs_ = 0;
+  enter(Screen::RadioUpdate);
+  emit("radio_update_browse");
+}
+
+void HmiController::radioUpdateStep() {
+  if (radioUpdateState_ == "browse") {
+    if (pressed(HmiButton::Ok)) radioUpdateState_ = "confirm";
+    if (pressed(HmiButton::Back)) {
+      firmwareUpdateSelection_ = 1;
+      enter(Screen::FirmwareUpdate);
+    }
+  } else if (radioUpdateState_ == "confirm") {
+    if (pressed(HmiButton::Back)) radioUpdateState_ = "browse";
+    if (pressed(HmiButton::Ok)) {
+      radioUpdateState_ = "updating";
+      radioUpdateStartedMs_ = nowMs_;
+      emit("radio_update_started");
+    }
+  } else if (radioUpdateState_ == "updating") {
+    if (nowMs_ - radioUpdateStartedMs_ >= 2U * kRadioUpdateLinkDurationMs) {
+      radioUpdateState_ = "complete";
+      emit("radio_update_complete");
+    }
+  } else if (radioUpdateState_ == "complete" && pressed(HmiButton::Back)) {
+    radioUpdateState_ = "browse";
+    radioUpdateStartedMs_ = 0;
+    firmwareUpdateSelection_ = 1;
+    enter(Screen::FirmwareUpdate);
   }
 }
 
@@ -719,8 +885,7 @@ void HmiController::render() {
   if (screen_ == Screen::Logo) {
     const uint64_t startupDurationMs =
         config_.config().startupAnimation ? StartupIntro::kDurationMs : StartupIntro::kStaticLogoDurationMs;
-    const auto elapsedMs =
-        static_cast<uint32_t>(std::min<uint64_t>(nowMs_ - startupStartedMs_, startupDurationMs));
+    const auto elapsedMs = static_cast<uint32_t>(std::min<uint64_t>(nowMs_ - startupStartedMs_, startupDurationMs));
     const uint32_t frame = config_.config().startupAnimation ? elapsedMs / StartupIntro::kFrameIntervalMs : 0U;
     if (frame == lastStartupFrame_) {
       return;
@@ -731,13 +896,16 @@ void HmiController::render() {
 }
 
 std::string HmiController::screenName() const {
-  static constexpr const char* names[] = {"logo", "menu", "live", "recovery", "testing", "data", "sensors",
-                                           "settings", "bootloader", "usb_storage"};
+  static constexpr const char* names[] = {"logo",     "menu",         "live",      "recovery",
+                                          "testing",  "data",         "sensors",   "settings",
+                                          "bootloader", "usb_storage", "self_test", "firmware_update",
+                                          "radio_update"};
   return names[static_cast<size_t>(screen_)];
 }
 
 std::string HmiController::testingName() const {
-  static constexpr const char* names[] = {"disclaimer", "can_start", "cannot_start", "waiting", "failed", "started", "confirm_event"};
+  static constexpr const char* names[] = {"disclaimer", "can_start", "cannot_start", "waiting",
+                                          "failed",     "started",   "confirm_event"};
   return names[static_cast<size_t>(testingState_)];
 }
 
@@ -747,18 +915,24 @@ std::string HmiController::calibrationName() const {
 }
 
 std::string HmiController::dataSubviewName() const {
-  static constexpr const char* names[] = {"list", "details", "options", "confirm_finalize", "confirm_delete", "message"};
+  static constexpr const char* names[] = {"list",           "details", "options", "confirm_finalize",
+                                          "confirm_delete", "message"};
   return names[static_cast<size_t>(dataSubview_)];
 }
 
 HmiSnapshot HmiController::snapshot() const {
   HmiSnapshot result;
   result.screen = screenName();
+  result.selfTest = selfTest_;
+  result.selfTestResultIndex = selfTestResultIndex_;
   result.testingState = testingName();
   result.calibrationState = calibrationName();
   result.settingsState = keyboardActive_ ? "keyboard" : "list";
+  result.settingsVersions = settingsVersions_;
   result.inputState = "idle";
   result.liveView = liveDownrange_ ? "downrange" : "gnss";
+  result.liveExitState = liveExitState_;
+  result.sensorView = sensorOrientation_ ? "orientation" : "readings";
   for (const bool held : input_.held) {
     if (held) {
       result.inputState = "held";
@@ -778,6 +952,19 @@ HmiSnapshot HmiController::snapshot() const {
   result.dataMessageTitle = dataMessageTitle_;
   result.dataMessageText = dataMessageText_;
   result.usbStorageMessage = usbStorageMessage_;
+  result.firmwareUpdateSelection = firmwareUpdateSelection_;
+  result.radioUpdateState = radioUpdateState_;
+  result.radioFirmwareSelection = radioFirmwareSelection_;
+  if (radioUpdateState_ == "updating") {
+    const uint64_t elapsed = nowMs_ - radioUpdateStartedMs_;
+    result.radioUpdateLink = elapsed < kRadioUpdateLinkDurationMs ? 1 : 2;
+    const uint64_t linkElapsed = elapsed % kRadioUpdateLinkDurationMs;
+    result.radioUpdatePercent = static_cast<uint8_t>(std::min<uint64_t>(99, linkElapsed * 100U /
+                                                                                kRadioUpdateLinkDurationMs));
+  } else if (radioUpdateState_ == "complete") {
+    result.radioUpdateLink = 2;
+    result.radioUpdatePercent = 100;
+  }
   result.qrView = qrView_;
   result.qrUrl = qrUrl_;
   result.recoveryLocations = recoveryLocations_;
@@ -785,14 +972,12 @@ HmiSnapshot HmiController::snapshot() const {
   result.configuration = config_.config();
   const uint64_t startupDurationMs =
       result.configuration.startupAnimation ? StartupIntro::kDurationMs : StartupIntro::kStaticLogoDurationMs;
-  const auto startupElapsed =
-      static_cast<uint32_t>(std::min<uint64_t>(nowMs_ - startupStartedMs_, startupDurationMs));
+  const auto startupElapsed = static_cast<uint32_t>(std::min<uint64_t>(nowMs_ - startupStartedMs_, startupDurationMs));
   result.startupElapsedMs = startupElapsed;
-  result.startupPhase = screen_ != Screen::Logo
-                            ? StartupIntro::PhaseName(StartupIntro::Phase::kComplete)
-                            : (result.configuration.startupAnimation
-                                   ? StartupIntro::PhaseName(StartupIntro::PhaseAt(startupElapsed))
-                                   : "static_logo");
+  result.startupPhase = screen_ != Screen::Logo ? StartupIntro::PhaseName(StartupIntro::Phase::kComplete)
+                                                : (result.configuration.startupAnimation
+                                                       ? StartupIntro::PhaseName(StartupIntro::PhaseAt(startupElapsed))
+                                                       : "static_logo");
   result.links[0] = link1_.snapshot();
   result.links[1] = link2_.snapshot();
   result.navigation = navigation_.snapshot();
@@ -801,15 +986,16 @@ HmiSnapshot HmiController::snapshot() const {
   result.device.logging = result.recorder.state == "recording";
   result.device.recorderFault = result.recorder.state == "fault";
   result.logs = logs_.listLogs();
-  if (dataSubview_ != DataSubview::List && dataSelection_ >= 0 && dataSelection_ < static_cast<int16_t>(result.logs.size())) {
+  if (dataSubview_ != DataSubview::List && dataSelection_ >= 0 &&
+      dataSelection_ < static_cast<int16_t>(result.logs.size())) {
     result.flightStatistics[0] = logs_.statistics(result.logs[static_cast<size_t>(dataSelection_)], 1);
     result.flightStatistics[1] = logs_.statistics(result.logs[static_cast<size_t>(dataSelection_)], 2);
     const bool anyParticipant = result.flightStatistics[0].participant || result.flightStatistics[1].participant;
     const bool complete = anyParticipant &&
-        (!result.flightStatistics[0].participant || result.flightStatistics[0].complete) &&
-        (!result.flightStatistics[1].participant || result.flightStatistics[1].complete);
-    result.selectedLogHealth = result.logs[static_cast<size_t>(dataSelection_)].active ? "active" :
-                               (complete ? "complete" : "incomplete");
+                          (!result.flightStatistics[0].participant || result.flightStatistics[0].complete) &&
+                          (!result.flightStatistics[1].participant || result.flightStatistics[1].complete);
+    result.selectedLogHealth =
+        result.logs[static_cast<size_t>(dataSelection_)].active ? "active" : (complete ? "complete" : "incomplete");
   }
   result.selectedRecoveryLink = result.configuration.dualReceiver ? selectedRecoveryLink_ : -1;
   const float targetLatitude = result.configuration.dualReceiver

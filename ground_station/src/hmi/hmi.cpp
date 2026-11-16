@@ -36,9 +36,14 @@ void Hmi::begin() {
 
   recorder.begin();
   recorder.configure(systemConfig.config.receiverMode, systemConfig.config.neverStopLogging);
-  recorder.enable();
   link1.setPacketSink(&recorder, 1);
   link2.setPacketSink(&recorder, 2);
+  static RadioUpdate::RadioFirmwareUpdater updater(recorder, link1, link2);
+  if (updater.begin()) {
+    radioUpdater = &updater;
+  } else {
+    console.warning.println("[HMI] Could not start radio update worker");
+  }
 
   window.begin();
   initialized = true;
@@ -84,6 +89,18 @@ void Hmi::fsm() {
       usbStorage();
       break;
 
+    case SELF_TEST:
+      selfTestStep();
+      break;
+
+    case FIRMWARE_UPDATE:
+      firmwareUpdate();
+      break;
+
+    case RADIO_UPDATE:
+      radioUpdate();
+      break;
+
     default:
       break;
   }
@@ -118,7 +135,12 @@ void Hmi::menu() {
   if (okButton.wasPressed() || centerButton.wasPressed()) {
     state = static_cast<State>(menuIndex + 1);
     if (state == LIVE) {
-      initLive();
+      if (recorder.startLiveRecording()) {
+        initLive();
+      } else {
+        liveExitState = LiveExitState::StartFailed;
+        window.initDataMessage("Log Error", "Unable to enable recording");
+      }
     } else if (state == RECOVERY) {
       initRecovery();
     } else if (state == TESTING) {
@@ -135,13 +157,89 @@ void Hmi::menu() {
 
 /* LIVE */
 
-void Hmi::initLive() { window.initLive(); }
+void Hmi::initLive() {
+  liveExitState = LiveExitState::None;
+  window.initLive();
+  window.updateLive(&link1.data, &navigation, &link1.info, 0);
+  window.updateLive(&link2.data, &navigation, &link2.info, 1);
+  window.refresh();
+  lastLiveRefresh = millis();
+}
+
+bool Hmi::liveButtonPending() const {
+  return (digitalRead(kLeftButtonPin) == LOW) != leftButton.isPressed() ||
+         (digitalRead(kRightButtonPin) == LOW) != rightButton.isPressed() ||
+         (digitalRead(kBackButtonPin) == LOW) != backButton.isPressed();
+}
 
 void Hmi::live() {
-  bool updated = false;
+  if (liveExitState == LiveExitState::StartFailed || liveExitState == LiveExitState::StopFailed) {
+    if (backButton.wasPressed()) {
+      if (liveExitState == LiveExitState::StartFailed) {
+        // Also cancel a start command whose acknowledgement may have timed out.
+        if (!recorder.stopLiveRecording()) return;
+        state = MENU;
+        window.initMenu(menuIndex);
+      } else {
+        initLive();
+      }
+    }
+    return;
+  }
+  if (liveExitState == LiveExitState::Confirm) {
+    if (backButton.wasPressed()) {
+      initLive();
+    } else if (okButton.wasPressed()) {
+      if (!recorder.stopLiveRecording()) {
+        liveExitState = LiveExitState::StopFailed;
+        window.initDataMessage("Stop Failed", "Unable to close recording");
+        return;
+      }
+      state = MENU;
+      automaticUsbSharePending = Utils::isConnected();
+      window.initMenu(menuIndex);
+    }
+    return;
+  }
+  // Honour navigation before a full LCD transfer can delay button polling.
+  if (backButton.wasPressed()) {
+    bool needsConfirmation = false;
+    if (recorder.stopLiveRecording(true, &needsConfirmation)) {
+      state = MENU;
+      automaticUsbSharePending = Utils::isConnected();
+      window.initMenu(menuIndex);
+    } else if (needsConfirmation) {
+      liveExitState = LiveExitState::Confirm;
+      window.initLiveConfirmExit();
+    } else {
+      liveExitState = LiveExitState::StopFailed;
+      window.initDataMessage("Stop Failed", "Unable to close recording");
+    }
+    return;
+  }
+  if (rightButton.wasPressed()) {
+    window.UpdateLiveState(&link1.data, &link2.data, &navigation, Window::LiveState::kShowGnss);
+    lastLiveRefresh = millis();
+    return;
+  }
+  if (leftButton.wasPressed()) {
+    window.UpdateLiveState(&link1.data, &link2.data, &navigation, Window::LiveState::kShowDownRange);
+    lastLiveRefresh = millis();
+    return;
+  }
 
+  // Leave time to debounce a press or release before another blocking LCD transfer.
+  // Coalesce telemetry and navigation updates so packet arrivals cannot starve polling.
+  if (liveButtonPending() || millis() - lastLiveRefresh < kLiveRefreshIntervalMs) {
+    return;
+  }
+
+  bool updated = false;
   if (link1.data.isUpdated() && link1.info.isUpdated()) {
     window.updateLive(&link1.data, &navigation, &link1.info, 0);
+    updated = true;
+  } else if (link1.data.isUpdated()) {
+    window.updateLive(&link1.data, &navigation, 0);
     updated = true;
   } else if (link1.info.isUpdated()) {
     window.updateLive(&link1.info, 0);
@@ -151,29 +249,18 @@ void Hmi::live() {
   if (link2.data.isUpdated() && link2.info.isUpdated()) {
     window.updateLive(&link2.data, &navigation, &link2.info, 1);
     updated = true;
+  } else if (link2.data.isUpdated()) {
+    window.updateLive(&link2.data, &navigation, 1);
+    updated = true;
   } else if (link2.info.isUpdated()) {
     window.updateLive(&link2.info, 1);
     updated = true;
   }
 
+  updated |= window.updateLiveNavigation(link1.data, link2.data, &navigation);
   isLogging = recorder.getStatus().state == RecorderState::Recording;
-
-  if (updated) {
-    window.refresh();
-  }
-
-  if (rightButton.wasPressed()) {
-    window.UpdateLiveState(&link1.data, &link2.data, &navigation, Window::LiveState::kShowDownRange);
-  }
-
-  if (leftButton.wasPressed()) {
-    window.UpdateLiveState(&link1.data, &link2.data, &navigation, Window::LiveState::kShowGnss);
-  }
-
-  if (backButton.wasPressed()) {
-    state = MENU;
-    window.initMenu(menuIndex);
-  }
+  if (updated) window.refresh();
+  lastLiveRefresh = millis();
 }
 
 /* RECOVERY */
@@ -652,6 +739,7 @@ void Hmi::data() {
 /* SENSORS */
 
 void Hmi::initSensors() {
+  sensorView = SensorView::Readings;
   lastSensorRefresh = 0;
   window.initSensors();
 }
@@ -671,11 +759,28 @@ void Hmi::sensors() {
         return;
       }
 
+      if (rightButton.wasPressed() || downButton.wasPressed()) {
+        sensorView = SensorView::Orientation;
+        window.initSensorOrientation();
+        lastSensorRefresh = 0;
+        return;
+      }
+      if (leftButton.wasPressed() || upButton.wasPressed()) {
+        sensorView = SensorView::Readings;
+        window.initSensors();
+        lastSensorRefresh = 0;
+        return;
+      }
+
       const uint32_t now = millis();
       if (now - lastSensorRefresh >= kSensorRefreshIntervalMs) {
         // A full framebuffer transfer blocks this task. Leave a
         // quiet interval between sensor redraws so button polling stays fast.
-        window.updateSensors(&navigation);
+        if (sensorView == SensorView::Orientation) {
+          window.updateSensorOrientation(&navigation);
+        } else {
+          window.updateSensors(&navigation);
+        }
         lastSensorRefresh = millis();
       }
       break;
@@ -688,6 +793,7 @@ void Hmi::sensors() {
       }
       if (backButton.wasPressed()) {
         calibrationState = IDLE;
+        sensorView = SensorView::Readings;
         window.initSensors();
       }
       break;
@@ -707,6 +813,7 @@ void Hmi::sensors() {
     case CONCLUDED:
       if (okButton.wasPressed() || backButton.wasPressed()) {
         calibrationState = IDLE;
+        sensorView = SensorView::Readings;
         if (claimStorageForFirmware()) {
           systemConfig.save();
           automaticUsbSharePending = Utils::isConnected();
@@ -722,6 +829,7 @@ void Hmi::sensors() {
 /* SETTINGS */
 
 void Hmi::initSettings() {
+  versionsSelected = false;
   settingSubMenu = 0;
   settingIndex = -1;
   window.initSettings(settingSubMenu);
@@ -828,7 +936,8 @@ void Hmi::settings() {
           break;
         }
         case STRING: {
-          if (okButton.wasPressed()) {
+          if (okButton.wasPressed() &&
+              (data_ptr != systemConfig.config.linkPhrase2 || systemConfig.config.receiverMode != SINGLE)) {
             memcpy(keyboardString, static_cast<char *>(data_ptr), kMaxPhraseLen);
             keyboardString[kMaxPhraseLen] = '\0';
 
@@ -843,10 +952,14 @@ void Hmi::settings() {
               case BUTTON_ACTION_USB_STORAGE:
                 initUsbStorage();
                 return;
-              case BUTTON_ACTION_START_BOOTLOADER:
-                window.Bootloader();
-                Utils::startBootloader();
+              case BUTTON_ACTION_UPDATE_FIRMWARE:
+                initFirmwareUpdate();
                 return;
+              case BUTTON_ACTION_SELF_TEST:
+                initSelfTest();
+                return;
+              case BUTTON_ACTION_VERSION:
+                break;
               case BUTTON_ACTION_NONE:
                 break;
             }
@@ -891,6 +1004,33 @@ void Hmi::settings() {
       }
       window.initMenu(menuIndex);
     }
+  }
+  if (state == SETTINGS && !keyboardActive && settingIndex >= 0 &&
+      settingsTable[settingSubMenu][settingIndex].type == BUTTON &&
+      settingsTable[settingSubMenu][settingIndex].config.buttonAction == BUTTON_ACTION_VERSION) {
+    updateSettingVersions();
+  } else {
+    versionsSelected = false;
+  }
+}
+
+void Hmi::updateSettingVersions() {
+  Telemetry *links[] = {&link1, &link2};
+  bool redraw = !versionsSelected;
+  versionsSelected = true;
+  for (size_t i = 0; i < 2; ++i) {
+    const auto observation = links[i]->diagnostics();
+    const char *text = observation.versionReplies != 0
+                           ? observation.version
+                           : (links[i]->versionReadComplete() ? "No response" : "Reading...");
+    if (std::strcmp(displayedVersions[i], text) != 0) {
+      std::snprintf(displayedVersions[i], sizeof(displayedVersions[i]), "%s", text);
+      redraw = true;
+    }
+  }
+  if (redraw) {
+    window.settingsVersions(displayedVersions[0], displayedVersions[1]);
+    window.refresh();
   }
 }
 
@@ -984,7 +1124,145 @@ void Hmi::usbStorage() {
   }
 }
 
+void Hmi::initFirmwareUpdate() {
+  state = FIRMWARE_UPDATE;
+  firmwareUpdateIndex = 0;
+  window.initFirmwareUpdate(firmwareUpdateIndex);
+}
+
+void Hmi::firmwareUpdate() {
+  const int16_t oldIndex = firmwareUpdateIndex;
+  if (downButton.wasPressed() && firmwareUpdateIndex < 1) {
+    ++firmwareUpdateIndex;
+  }
+  if (upButton.wasPressed() && firmwareUpdateIndex > 0) {
+    --firmwareUpdateIndex;
+  }
+  if (backButton.wasPressed()) {
+    state = SETTINGS;
+    settingSubMenu = SETTING_SYSTEM;
+    settingIndex = 3;
+    window.initSettings(settingSubMenu);
+    window.updateSettings(settingIndex);
+    return;
+  }
+  if (okButton.wasPressed()) {
+    if (firmwareUpdateIndex == 0) {
+      window.Bootloader();
+      Utils::startBootloader();
+    } else {
+      initRadioUpdate();
+    }
+    return;
+  }
+  if (firmwareUpdateIndex != oldIndex) {
+    window.initFirmwareUpdate(firmwareUpdateIndex);
+  }
+}
+
+void Hmi::initRadioUpdate() {
+  state = RADIO_UPDATE;
+  automaticUsbSharePending = false;
+  leaveRadioUpdate = false;
+  radioUpdateRevision = UINT32_MAX;
+  radioUpdateIndex = 0;
+  radioUpdateWindowStart = 0;
+  if (radioUpdater == nullptr || !radioUpdater->browse()) {
+    window.initDataMessage("Radio Update", "Update worker unavailable");
+  }
+}
+
+void Hmi::drawRadioUpdateList(const RadioUpdate::Snapshot &snapshot) {
+  window.initRadioUpdateList();
+  const size_t end = std::min(snapshot.fileCount, radioUpdateWindowStart + 8U);
+  char filename[RadioUpdate::kNameSize]{};
+  for (size_t index = radioUpdateWindowStart; index < end; ++index) {
+    if (radioUpdater->filename(index, filename, sizeof(filename))) {
+      window.radioUpdateFileName(filename, static_cast<uint8_t>(index - radioUpdateWindowStart),
+                                 index == radioUpdateIndex);
+    }
+  }
+  window.refresh();
+}
+
+void Hmi::radioUpdate() {
+  if (radioUpdater == nullptr) {
+    if (backButton.wasPressed()) {
+      state = FIRMWARE_UPDATE;
+      firmwareUpdateIndex = 1;
+      window.initFirmwareUpdate(firmwareUpdateIndex);
+    }
+    return;
+  }
+  RadioUpdate::Snapshot snapshot = radioUpdater->snapshot();
+  if (snapshot.phase == RadioUpdate::Phase::Browsing && !snapshot.busy && snapshot.fileCount > 0) {
+    if (downButton.wasPressed() && radioUpdateIndex + 1U < snapshot.fileCount) {
+      ++radioUpdateIndex;
+      if (radioUpdateIndex >= radioUpdateWindowStart + 8U) {
+        radioUpdateWindowStart = radioUpdateIndex - 7U;
+      }
+      drawRadioUpdateList(snapshot);
+      return;
+    }
+    if (upButton.wasPressed() && radioUpdateIndex > 0) {
+      --radioUpdateIndex;
+      if (radioUpdateIndex < radioUpdateWindowStart) {
+        radioUpdateWindowStart = radioUpdateIndex;
+      }
+      drawRadioUpdateList(snapshot);
+      return;
+    }
+    if (okButton.wasPressed()) {
+      (void)radioUpdater->select(radioUpdateIndex);
+      return;
+    }
+  } else if (snapshot.phase == RadioUpdate::Phase::Confirm && !snapshot.busy && okButton.wasPressed()) {
+    (void)radioUpdater->program();
+    return;
+  }
+
+  const bool mayLeave =
+      !snapshot.busy &&
+      (snapshot.phase == RadioUpdate::Phase::Browsing || snapshot.phase == RadioUpdate::Phase::Confirm ||
+       snapshot.phase == RadioUpdate::Phase::Failed || snapshot.phase == RadioUpdate::Phase::Complete);
+  if (mayLeave && backButton.wasPressed()) {
+    leaveRadioUpdate = true;
+    (void)radioUpdater->close();
+    return;
+  }
+  if (leaveRadioUpdate && snapshot.phase == RadioUpdate::Phase::Idle && !snapshot.busy) {
+    leaveRadioUpdate = false;
+    automaticUsbSharePending = Utils::isConnected();
+    state = FIRMWARE_UPDATE;
+    firmwareUpdateIndex = 1;
+    window.initFirmwareUpdate(firmwareUpdateIndex);
+    return;
+  }
+  if (snapshot.revision == radioUpdateRevision) {
+    return;
+  }
+  radioUpdateRevision = snapshot.revision;
+  if (snapshot.phase == RadioUpdate::Phase::Browsing) {
+    drawRadioUpdateList(snapshot);
+  } else if (snapshot.phase == RadioUpdate::Phase::Confirm) {
+    window.initRadioUpdateConfirm(snapshot.filename, snapshot.image.size, snapshot.image.crc);
+  } else if (snapshot.phase == RadioUpdate::Phase::Complete || snapshot.phase == RadioUpdate::Phase::Failed) {
+    const char *link1Status = snapshot.results[0].success
+                                  ? snapshot.results[0].version
+                                  : (snapshot.results[0].entryRequested ? "QUARANTINED" : "not updated");
+    const char *link2Status = snapshot.results[1].success
+                                  ? snapshot.results[1].version
+                                  : (snapshot.results[1].entryRequested ? "QUARANTINED" : "not updated");
+    window.radioUpdateResult(snapshot.phase == RadioUpdate::Phase::Complete, snapshot.error, link1Status, link2Status);
+  } else {
+    window.radioUpdateProgress(RadioUpdate::phaseName(snapshot.phase), snapshot.link, snapshot.percent);
+  }
+}
+
 void Hmi::updateAutomaticUsbStorage(const RecorderStatus &recorderStatus) {
+  if (state == SELF_TEST || state == RADIO_UPDATE) {
+    return;
+  }
   const bool connected = Utils::isConnected();
   if (!connected) {
     usbPreviouslyConnected = false;
@@ -1063,10 +1341,11 @@ void Hmi::update(void *pvParameter) {
       // ref->window.updateBar(link1.data.ts());
     }
 
-    if (millis() - barUpdate >= 1000) {
+    if (ref->state != SELF_TEST && millis() - barUpdate >= 1000 && (ref->state != LIVE || !ref->liveButtonPending())) {
       barUpdate = millis();
       const float voltage = static_cast<float>(analogRead(18)) * 0.00062F;  // 0.00059154929F;
-      if (!ref->isLogging && Utils::isFilesystemAvailable()) {
+      // Live can start/finalize recording after the status snapshot. Do not scan its shared FAT cache here.
+      if (ref->state != LIVE && !ref->isLogging && Utils::isFilesystemAvailable()) {
         ref->flashFreeMemory = Utils::getFlashMemoryUsage();
       }
       if (link2.time.isUpdated()) {

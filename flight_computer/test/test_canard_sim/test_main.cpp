@@ -695,6 +695,7 @@ void Control_FrameCheck_VisibleOnPad() {
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
   // The envelope itself has not latched: its own reason is still NONE; the logged reason is IMU_FAULT.
   TEST_ASSERT_TRUE(bad.PadSampleSeen());
+  TEST_ASSERT_TRUE(bad.OnPad());
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(bad.State()));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(bad.Reason()));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(bad.LoggedReason()));
@@ -714,6 +715,7 @@ void Control_StartedOffThePad_NoPadSamples() {
   (void)ctl.Update(in);
   TEST_ASSERT_FALSE(ctl.PadSampleSeen());
   TEST_ASSERT_FALSE(ctl.FrameCheckOk());
+  TEST_ASSERT_FALSE(ctl.OnPad());
   TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(ctl.State()));
   TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(ctl.LoggedReason()));
 }

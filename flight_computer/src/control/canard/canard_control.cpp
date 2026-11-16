@@ -86,6 +86,8 @@ bool CanardControl::CancelTest() {
   return was_running;
 }
 
+bool CanardControl::OnPad() const { return IsPadPhase(m_last_phase); }
+
 bool CanardControl::FrameCheckOk() const { return m_pad_acc_seen && m_pad_acc_z_mps2 > kFrameCheckMinMps2; }
 
 void CanardControl::TestCommandDeg(float dt_s, const float controller_deg[4], float out_deg[4]) {

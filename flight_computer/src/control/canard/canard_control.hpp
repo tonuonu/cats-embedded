@@ -56,6 +56,8 @@ class CanardControl {
   [[nodiscard]] float PadAccZMps2() const { return m_pad_acc_z_mps2; }
   /// False until the first pad sample, so also when control started off the pad: the frame check was never run.
   [[nodiscard]] bool PadSampleSeen() const { return m_pad_acc_seen; }
+  /// The last control step was on the pad (CALIBRATING or READY).
+  [[nodiscard]] bool OnPad() const;
   /// The envelope's own state and latch reason.
   [[nodiscard]] EnvState State() const { return m_last_state; }
   [[nodiscard]] LatchReason Reason() const { return m_last_reason; }

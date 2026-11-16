@@ -177,6 +177,33 @@ void Attitude_PadLevel_T2Sign() {
   TEST_ASSERT_FLOAT_WITHIN(0.2F, 0.0F, tilt[0]);
 }
 
+void Attitude_TiltMag_InvertedReads180() {
+  // Ruling R24: 180 deg about t1 turns the nose straight down. Both tilt components read ~0 (asin of a zero up_x and
+  // up_y), so the envelope uses the magnitude acos(up_z) instead.
+  ControlAttitude att;
+  att.Reset();
+  TEST_ASSERT_FLOAT_WITHIN(1e-3F, 0.0F, att.TiltMagDeg());
+  const float gyro[3] = {180.0F, 0.0F, 0.0F};
+  for (int i = 0; i < 100; ++i) {
+    att.UpdateFlight(gyro, 0.01F);
+  }
+  float tilt[2] = {0.0F, 0.0F};
+  att.TiltDeg(tilt);
+  TEST_ASSERT_FLOAT_WITHIN(0.5F, 0.0F, tilt[0]);
+  TEST_ASSERT_FLOAT_WITHIN(0.5F, 0.0F, tilt[1]);
+  TEST_ASSERT_FLOAT_WITHIN(0.5F, 180.0F, att.TiltMagDeg());
+}
+
+void Attitude_TiltMag_MatchesSmallTilt() {
+  ControlAttitude att;
+  att.Reset();
+  const float gyro[3] = {0.0F, 10.0F, 0.0F};
+  for (int i = 0; i < 50; ++i) {
+    att.UpdateFlight(gyro, 0.01F);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.05F, 5.0F, att.TiltMagDeg());
+}
+
 void Attitude_PadSkipsLevellingUnderAccel() {
   ControlAttitude att;
   att.Reset();
@@ -201,6 +228,8 @@ int main() {
   RUN_TEST(Attitude_Flight_IntegratesTilt);
   RUN_TEST(Attitude_Flight_IntegratesTilt_T2Sign);
   RUN_TEST(Attitude_PadLevel_T2Sign);
+  RUN_TEST(Attitude_TiltMag_InvertedReads180);
+  RUN_TEST(Attitude_TiltMag_MatchesSmallTilt);
   RUN_TEST(Attitude_PadSkipsLevellingUnderAccel);
   return UNITY_END();
 }

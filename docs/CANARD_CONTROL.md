@@ -87,7 +87,10 @@ re-enter your settings. External tools such as the CATS Configurator need the ne
 | ACTIVE | 2 | controller output (or STEP doublets) |
 | NEUTRAL_LATCHED | 3 | trim for the rest of the flight |
 
-ACTIVE needs the flight state THRUSTING or later and speed at or above `ctrl_v_enable`. Any exit
+ACTIVE needs the flight state THRUSTING or later and speed at or above `ctrl_v_enable`. It also
+needs the frame check: on the pad, the body-axis specific force (averaged over about 1 s) must be
+above 0.8 g along the nose. A board whose long-axis sign is wrong reads about -1 g there, so
+activation latches IMU_FAULT instead. Any exit
 condition latches NEUTRAL_LATCHED for the rest of the flight and records its reason:
 
 | Reason | Value | Cause |
@@ -95,9 +98,9 @@ condition latches NEUTRAL_LATCHED for the rest of the flight and records its rea
 | NONE | 0 | no latch |
 | DROGUE | 1 | drogue phase reached |
 | LOW_SPEED | 2 | speed below `ctrl_v_enable` while in COASTING only (not checked during thrust) |
-| TILT | 3 | tilt above `ctrl_abort_tilt` |
+| TILT | 3 | tilt above `ctrl_abort_tilt` (angle between the nose and vertical, so an inverted estimate reads 180 deg) |
 | GYRO_SAT | 4 | a gyro axis reached 1900 deg/s |
-| IMU_FAULT | 5 | IMU eliminated or faulty |
+| IMU_FAULT | 5 | IMU eliminated or faulty, a non-finite input, or the frame check failed at activation |
 | AUTHORITY | 6 | CLOSED only. Roll authority check: roll rate above 90 deg/s for 0.5 s while the roll command is saturated against it (loop not working) |
 | STEP_DONE | 7 | last STEP doublet finished |
 | STEP_ROLL_RATE | 8 | STEP only. Roll rate above 360 deg/s |

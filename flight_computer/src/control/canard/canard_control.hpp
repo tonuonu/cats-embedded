@@ -62,6 +62,11 @@ class CanardControl {
   float m_defl_deg[4] = {};
   float m_roll_rate_dps = 0.0F;
   float m_tilt_deg[2] = {};
+  float m_tilt_mag_deg = 0.0F;
+  /// Frame check (Ruling R24): low-passed body z specific force on the pad. Activation needs it above 0.8 g, so a
+  /// wrong long-axis sign (body z reads -1 g at rest) or no pad samples at all latches kImuFault instead.
+  float m_pad_acc_z_mps2 = 0.0F;
+  bool m_pad_acc_seen = false;
 };
 
 }  // namespace canard

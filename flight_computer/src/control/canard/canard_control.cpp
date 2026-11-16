@@ -20,6 +20,9 @@ constexpr float kSaturationTolDeg = 1e-3F;
 /// Sweep test: each claimed output holds +max, -max and trim for this long, one output after the other.
 constexpr float kSweepHoldS = 1.0F;
 constexpr int kSweepPositions = 3;
+/// Frame check: time constant of the pad body z specific force filter and the activation threshold (0.8 g).
+constexpr float kFrameCheckTauS = 1.0F;
+constexpr float kFrameCheckMinMps2 = 0.8F * 9.81F;
 
 bool IsPadPhase(Phase phase) { return phase == Phase::kCalibrating || phase == Phase::kReady; }
 
@@ -55,6 +58,9 @@ void CanardControl::Reset() {
   m_roll_rate_dps = 0.0F;
   m_tilt_deg[0] = 0.0F;
   m_tilt_deg[1] = 0.0F;
+  m_tilt_mag_deg = 0.0F;
+  m_pad_acc_z_mps2 = 0.0F;
+  m_pad_acc_seen = false;
 }
 
 bool CanardControl::StartTest(const TestCommand& cmd) {
@@ -109,16 +115,16 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
 
   EnvelopeInputs env;
   env.phase = in.phase;
-  env.imu_faulty = in.imu_faulty;
   env.sim_running = in.sim_running;
   env.dt_s = in.dt_s;
 
   if (!AllFinite(in)) {
     // Fail safe: nothing non-finite reaches the estimator, schedule, controllers or mixer. The envelope sees a
     // non-finite gyro magnitude and latches kImuFault; the outputs go straight to trim.
+    env.imu_faulty = in.imu_faulty;
     env.v_mps = in.velocity_mps;
     env.roll_rate_dps = m_roll_rate_dps;
-    env.tilt_mag_deg = std::hypot(m_tilt_deg[0], m_tilt_deg[1]);
+    env.tilt_mag_deg = m_tilt_mag_deg;
     env.max_abs_gyro_dps = std::nanf("");
     const EnvelopeDecision d = m_envelope.Update(env);
     m_test_running = false;
@@ -141,14 +147,22 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
   BoardToBody(in.gyro_board_dps, in.long_axis, in.long_sign, gyro_body);
   BoardToBody(in.acc_board_mps2, in.long_axis, in.long_sign, acc_body);
 
-  // 2. Attitude.
+  // 2. Attitude, and the frame check on the pad: the filter starts at the first pad sample and freezes in flight.
   if (IsPadPhase(in.phase)) {
     m_attitude.UpdatePad(gyro_body, acc_body, in.dt_s);
+    if (m_pad_acc_seen) {
+      const float alpha = std::fmin(1.0F, std::fmax(0.0F, in.dt_s / kFrameCheckTauS));
+      m_pad_acc_z_mps2 += alpha * (acc_body[2] - m_pad_acc_z_mps2);
+    } else {
+      m_pad_acc_z_mps2 = acc_body[2];
+      m_pad_acc_seen = true;
+    }
   } else {
     m_attitude.UpdateFlight(gyro_body, in.dt_s);
   }
   m_roll_rate_dps = m_attitude.RollRateDps();
   m_attitude.TiltDeg(m_tilt_deg);
+  m_tilt_mag_deg = m_attitude.TiltMagDeg();
   float rate_t[2];
   m_attitude.TransverseRatesDps(rate_t);
 
@@ -177,9 +191,12 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
   for (const float g : in.gyro_board_dps) {
     max_abs_gyro = std::fmax(max_abs_gyro, std::fabs(g));
   }
+  // A failed frame check counts as an IMU fault: ignored on the pad, it latches kImuFault in the activating Update.
+  const bool frame_ok = m_pad_acc_seen && m_pad_acc_z_mps2 > kFrameCheckMinMps2;
+  env.imu_faulty = in.imu_faulty || !frame_ok;
   env.v_mps = in.velocity_mps;
   env.roll_rate_dps = m_roll_rate_dps;
-  env.tilt_mag_deg = std::hypot(m_tilt_deg[0], m_tilt_deg[1]);
+  env.tilt_mag_deg = m_tilt_mag_deg;
   env.max_abs_gyro_dps = max_abs_gyro;
   env.roll_cmd_deg = u_roll;
   env.roll_cmd_saturated = std::fabs(u_roll) >= max_defl - kSaturationTolDeg;

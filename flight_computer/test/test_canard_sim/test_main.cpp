@@ -345,6 +345,41 @@ void Vehicle_CanardsAloneStop360In0p12s() {
   TEST_ASSERT_TRUE(std::fabs(t_stop - 0.12) < 0.005);
 }
 
+/// Holds the board still and upright on the pad (READY) for the given time, as the firmware does before liftoff:
+/// the frame check needs pad samples with the body z specific force at +1 g before control may activate.
+void PadUpright(CanardControl& ctl, double seconds = 2.0) {
+  ControlInputs in;
+  const double acc[3] = {0.0, 0.0, kGravity};
+  BodyToBoard(acc, in.acc_board_mps2);
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kReady;
+  in.dt_s = kTickS;
+  for (int i = 0; i < static_cast<int>(seconds / kTickS); ++i) (void)ctl.Update(in);
+}
+
+/// Pad (READY, at rest) with the given body-frame specific force, then one coasting step at 100 m/s.
+/// long_sign is what the glue passes; the board is mounted with kLongSign.
+ControlOutputs PadThenActivate(const double acc_body[3], float long_sign, double pad_s) {
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  ControlInputs pad;
+  BodyToBoard(acc_body, pad.acc_board_mps2);
+  pad.long_axis = kLongAxis;
+  pad.long_sign = long_sign;
+  pad.phase = Phase::kReady;
+  pad.dt_s = kTickS;
+  for (int i = 0; i < static_cast<int>(pad_s / kTickS); ++i) {
+    const ControlOutputs out = ctl.Update(pad);
+    TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(out.state));
+  }
+  ControlInputs fly = pad;
+  fly.acc_board_mps2[0] = fly.acc_board_mps2[1] = fly.acc_board_mps2[2] = 0.0F;
+  fly.phase = Phase::kCoasting;
+  fly.velocity_mps = 100.0F;
+  return ctl.Update(fly);
+}
+
 // ---------------------------------------------------------------- defaults
 
 void Defaults_TiltGainsZero_UntilStage2Sim() {
@@ -360,6 +395,7 @@ void Control_Shadow_LogsWouldBeCommand_SendsZero() {
   p.mode = FlightMode::kShadow;
   CanardControl ctl;
   ctl.Configure(p);
+  PadUpright(ctl);
   ControlInputs in;
   in.long_axis = kLongAxis;
   in.long_sign = kLongSign;
@@ -382,6 +418,7 @@ void Control_Closed_SlewLimitedAtDefaultWhenUnset() {
   p.slew_dps = 0.0F;  // not set: the default 300 deg/s applies
   CanardControl ctl;
   ctl.Configure(p);
+  PadUpright(ctl);
   ControlInputs in;
   in.long_axis = kLongAxis;
   in.long_sign = kLongSign;
@@ -402,6 +439,7 @@ void Control_Closed_SlewLimitedAtDefaultWhenUnset() {
 void Control_NonFinite_ZerosAndLatchesImuFault() {
   CanardControl ctl;
   ctl.Configure(SimParams(Layout::kFull4));
+  PadUpright(ctl);
   ControlInputs in;
   in.long_axis = kLongAxis;
   in.long_sign = kLongSign;
@@ -430,6 +468,7 @@ void Control_NonFinite_ZerosAndLatchesImuFault() {
 void Control_Latched_LogsWouldBeCommand_SendsZero() {
   CanardControl ctl;
   ctl.Configure(SimParams(Layout::kRoll2));
+  PadUpright(ctl);
   ControlInputs in;
   in.long_axis = kLongAxis;
   in.long_sign = kLongSign;
@@ -482,6 +521,7 @@ void Control_Step_MixesChosenAxis() {
   p.step_count = 1;
   CanardControl ctl;
   ctl.Configure(p);
+  PadUpright(ctl);
   ControlInputs in;
   in.long_axis = kLongAxis;
   in.long_sign = kLongSign;
@@ -556,6 +596,41 @@ void Control_TestLive_UsesForcedVelocity() {
   for (int i = 0; i < 120; ++i) out = ctl.Update(in);  // past the 1 s timeout
   TEST_ASSERT_EQUAL_FLOAT(0.0F, out.defl_deg[0]);
   TEST_ASSERT_FALSE(ctl.StartTest(TestCommand{}));  // kind kNone is refused
+}
+
+void Control_InvertedMount_LatchesImuFaultAtActivation() {
+  // Ruling R24: long_sign wrong (the board reads -1 g on body z at rest). The pad stays NEUTRAL_PAD; activation
+  // latches IMU_FAULT instead of flying an upside-down frame.
+  const double up[3] = {0.0, 0.0, kGravity};
+  const ControlOutputs out = PadThenActivate(up, -kLongSign, 3.0);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
+  for (const float d : out.defl_deg) TEST_ASSERT_EQUAL_FLOAT(0.0F, d);
+}
+
+void Control_TiltedRail10_ActivatesNormally() {
+  // A 10 deg rail: body z specific force g cos 10 = 0.98 g, above the 0.8 g frame check.
+  const double a = 10.0 * kDegToRad;
+  const double acc[3] = {kGravity * std::sin(a), 0.0, kGravity * std::cos(a)};
+  const ControlOutputs out = PadThenActivate(acc, kLongSign, kPadS);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(out.reason));
+  TEST_ASSERT_FLOAT_WITHIN(0.3F, -10.0F, out.tilt_deg[0]);
+}
+
+void Control_NoPadSamples_LatchesImuFaultAtActivation() {
+  // Fail safe: without pad samples the frame was never checked, so activation latches IMU_FAULT.
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  ControlInputs in;
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kThrusting;
+  in.velocity_mps = 50.0F;
+  in.dt_s = kTickS;
+  const ControlOutputs out = ctl.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
 }
 
 // ---------------------------------------------------------------- closed loop
@@ -748,6 +823,9 @@ int main() {
   RUN_TEST(Control_Step_MixesChosenAxis);
   RUN_TEST(Control_TestSweep_StepsEachOutput);
   RUN_TEST(Control_TestLive_UsesForcedVelocity);
+  RUN_TEST(Control_InvertedMount_LatchesImuFaultAtActivation);
+  RUN_TEST(Control_TiltedRail10_ActivatesNormally);
+  RUN_TEST(Control_NoPadSamples_LatchesImuFaultAtActivation);
   RUN_TEST(Sim_Roll_DampsAt100);
   RUN_TEST(Sim_Roll_StableAcrossEffectiveness);
   RUN_TEST(Sim_Roll_ReversedTripsAuthority);

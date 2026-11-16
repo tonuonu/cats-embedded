@@ -20,6 +20,9 @@ class ControlAttitude {
   void TransverseRatesDps(float out[2]) const;
   /// Nose lean toward body +t1 / +t2 in degrees.
   void TiltDeg(float out[2]) const;
+  /// Angle between the nose and world up in degrees, acos(up_z): 0 upright, 180 inverted. Unlike the TiltDeg
+  /// components (asin, so 0 again when inverted) it tells an upside-down estimate apart from an upright one.
+  float TiltMagDeg() const;
   void GyroBiasDps(float out[3]) const;
 
  private:

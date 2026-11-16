@@ -119,6 +119,13 @@ void ControlAttitude::TiltDeg(float out[2]) const {
   out[1] = std::asin(Clamp1(-up_y)) * kRadToDeg;
 }
 
+float ControlAttitude::TiltMagDeg() const {
+  const float x = q_[1];
+  const float y = q_[2];
+  const float up_z = 1.0F - 2.0F * (x * x + y * y);
+  return std::acos(Clamp1(up_z)) * kRadToDeg;
+}
+
 void ControlAttitude::GyroBiasDps(float out[3]) const {
   for (int i = 0; i < 3; ++i) {
     out[i] = bias_dps_[i];

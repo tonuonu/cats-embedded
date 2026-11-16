@@ -46,6 +46,19 @@ void LiveArgs_BadDurationRejected() {
   }
 }
 
+void LiveArgs_OverflowIsOutOfRange() {
+  // strtof overflow (ERANGE) is reported as out of range, not as a usage error and not as the 120 s cap.
+  const LiveTestArgs d = ParseLiveTestArgs("100 1e39");
+  TEST_ASSERT_FALSE(d.ok);
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveTestArgs::Error::kDurationRange), static_cast<int>(d.error));
+  const LiveTestArgs v = ParseLiveTestArgs("1e39 5");
+  TEST_ASSERT_FALSE(v.ok);
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveTestArgs::Error::kSpeedRange), static_cast<int>(v.error));
+  // Typed "inf" is a usage error; a valid command has no error.
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveTestArgs::Error::kUsage), static_cast<int>(ParseLiveTestArgs("100 inf").error));
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveTestArgs::Error::kNone), static_cast<int>(ParseLiveTestArgs("100 500").error));
+}
+
 void LiveArgs_BadSpeedRejected() {
   for (const char* text : {"", "x", "inf", "nan", "0", "-1", "-inf", "inf 5", "nan 5", "0 5"}) {
     TEST_ASSERT_FALSE_MESSAGE(ParseLiveTestArgs(text).ok, text);
@@ -59,6 +72,7 @@ int main() {
   RUN_TEST(LiveArgs_DurationKept);
   RUN_TEST(LiveArgs_DurationCappedAt120);
   RUN_TEST(LiveArgs_BadDurationRejected);
+  RUN_TEST(LiveArgs_OverflowIsOutOfRange);
   RUN_TEST(LiveArgs_BadSpeedRejected);
   return UNITY_END();
 }

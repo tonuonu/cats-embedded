@@ -4,6 +4,7 @@
 
 #include "control/canard/test_args.hpp"
 
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 
@@ -19,7 +20,12 @@ LiveTestArgs ParseLiveTestArgs(const char* text) {
     return a;
   }
   char* end = nullptr;
+  errno = 0;
   a.speed_mps = std::strtof(text, &end);
+  if (end != text && errno == ERANGE) {
+    a.error = LiveTestArgs::Error::kSpeedRange;
+    return a;
+  }
   if (end == text || !FinitePositive(a.speed_mps)) {
     return a;
   }
@@ -27,7 +33,12 @@ LiveTestArgs ParseLiveTestArgs(const char* text) {
   if (*end != '\0') {
     const char* const start = end;
     char* end2 = nullptr;
+    errno = 0;
     a.duration_s = std::strtof(start, &end2);
+    if (end2 != start && errno == ERANGE) {
+      a.error = LiveTestArgs::Error::kDurationRange;
+      return a;
+    }
     if (end2 == start || !FinitePositive(a.duration_s) || *end2 != '\0') {
       return a;
     }
@@ -37,6 +48,7 @@ LiveTestArgs ParseLiveTestArgs(const char* text) {
     a.capped = true;
   }
   a.ok = true;
+  a.error = LiveTestArgs::Error::kNone;
   return a;
 }
 

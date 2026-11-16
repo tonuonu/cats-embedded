@@ -15,6 +15,7 @@
 #include "cli/cli.hpp"
 #include "config/cats_config.hpp"
 #include "config/globals.hpp"
+#include "control/canard/mixer.hpp"
 #include "drivers/w25q.hpp"
 #include "flash/lfs_custom.hpp"
 #include "flash/reader.hpp"
@@ -47,6 +48,7 @@ static void cli_cmd_status(const char *cmd_name, char *args);
 static void cli_cmd_version(const char *cmd_name, char *args);
 
 static void cli_cmd_log_enable(const char *cmd_name, char *args);
+static void cli_cmd_ctrl_test(const char *cmd_name, char *args);
 
 static void cli_cmd_ls(const char *cmd_name, char *args);
 static void cli_cmd_cd(const char *cmd_name, char *args);
@@ -73,6 +75,7 @@ const clicmd_t cmd_table[] = {
     CLI_COMMAND_DEF("bl", "reset into bootloader", nullptr, cli_cmd_bl),
     CLI_COMMAND_DEF("cd", "change current working directory", nullptr, cli_cmd_cd),
     CLI_COMMAND_DEF("config", "print the flight config", nullptr, cli_cmd_config),
+    CLI_COMMAND_DEF("ctrl_test", "canard bench test", "sweep | live <speed> [s]", cli_cmd_ctrl_test),
     CLI_COMMAND_DEF("defaults", "reset to defaults and reboot", nullptr, cli_cmd_defaults),
     CLI_COMMAND_DEF("dump", "Dump configuration", nullptr, cli_cmd_dump),
     CLI_COMMAND_DEF("flash_erase", "erase the flash", nullptr, cli_cmd_erase_flash),
@@ -436,6 +439,42 @@ static void cli_cmd_version(const char *cmd_name [[maybe_unused]], char *args [[
 }
 
 static void cli_cmd_log_enable(const char *cmd_name [[maybe_unused]], char *args [[maybe_unused]]) { log_enable(); }
+
+/// ctrl_test sweep | live <speed_mps> [seconds=20]. Bench only: CanardIo accepts it while the FSM is READY.
+static void cli_cmd_ctrl_test(const char *cmd_name [[maybe_unused]], char *args) {
+  constexpr const char *kUsage = "usage: ctrl_test sweep | live <speed> [s]";
+  canard::TestCommand cmd{};
+  if (args != nullptr && strcmp(args, "sweep") == 0) {
+    // every output goes +max, -max, back to trim (4 s per output), plus 1 s margin
+    const auto n = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
+    cmd = {canard::TestCommand::Kind::kSweep, 0.0F, static_cast<float>(4U * n) + 1.0F};
+  } else if (args != nullptr && strncmp(args, "live ", 5) == 0) {
+    char *end = nullptr;
+    const float speed = strtof(args + 5, &end);
+    float seconds = 20.0F;
+    if (end == args + 5) {
+      cli_print_line(kUsage);
+      return;
+    }
+    if (*end != '\0') {
+      char *end2 = nullptr;
+      seconds = strtof(end, &end2);
+      if (end2 == end || !(seconds > 0.0F) || *end2 != '\0') {
+        cli_print_line(kUsage);
+        return;
+      }
+    }
+    cmd = {canard::TestCommand::Kind::kLive, speed, seconds};
+  } else {
+    cli_print_line(kUsage);
+    return;
+  }
+  if (task::global_canard_io == nullptr) {
+    cli_print_line("ctrl_test: layout is OFF");
+  } else if (!task::global_canard_io->StartTest(cmd)) {
+    cli_print_line("ctrl_test: only on the pad (READY)");
+  }
+}
 
 static void cli_cmd_ls(const char *cmd_name [[maybe_unused]], char *args) {
   if (args == nullptr) {

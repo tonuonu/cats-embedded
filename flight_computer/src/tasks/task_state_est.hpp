@@ -21,6 +21,9 @@ namespace task {
 class StateEstimation;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern StateEstimation* global_state_estimation;
+/// The canard glue of the running StateEstimation; nullptr while the boot layout is OFF (set in Run, after Init).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+extern CanardIo* global_canard_io;
 
 /* Stack size in words (uint32_t) */
 inline constexpr uint32_t kStateEstStackWords = 512;

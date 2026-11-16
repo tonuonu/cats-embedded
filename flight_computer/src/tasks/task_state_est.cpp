@@ -10,6 +10,8 @@ namespace task {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 StateEstimation* global_state_estimation = nullptr;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+CanardIo* global_canard_io = nullptr;
 
 void StateEstimation::GetEstimationInputData() {
   /* After apogee we assume that the linear acceleration is zero. This assumption is true if the parachute has been
@@ -56,6 +58,7 @@ estimation_output_t StateEstimation::GetEstimationOutput() const noexcept {
   const bool canard_on = canard_boot_layout() != static_cast<uint8_t>(canard::Layout::kOff);
   if (canard_on) {
     m_canard.Init();
+    global_canard_io = &m_canard;
   }
   /* Stack check for the canard control step: the high-water mark is logged once, 10 s into the loop */
   uint32_t stack_check_countdown = uint32_t{10U} * CONTROL_SAMPLING_FREQ;

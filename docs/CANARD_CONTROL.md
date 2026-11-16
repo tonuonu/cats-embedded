@@ -173,7 +173,8 @@ Do these in order, with the board on the bench and the servo horns free.
    against the same sim on the pre-change firmware (build `main` at `60c5f61`). Only the config
    version and size differ and there are no CONTROL_INFO lines.
 6. **Stack check.** On a debug build with ROLL_2, read the line
-   `StateEstimation stack: N of 512 words never used` 10 s after boot. Raise the stack if N < 128.
+   `StateEstimation stack: N of 512 words never used` 10 s after control starts (control starts in
+   READY, about 10 s after boot when still, so about 20 s after boot). Raise the stack if N < 128.
 7. **Sweep.** `ctrl_test` works only in READY: wait about 10 s after boot and hold the board still.
    `ctrl_test sweep` moves each output in turn through +max, -max and back to trim, 1 s each (3 s
    per output, so 7 s for ROLL_2 and 13 s for FULL_4 including a 1 s margin). Confirm the signs and

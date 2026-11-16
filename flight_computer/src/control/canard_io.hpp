@@ -66,6 +66,9 @@ class CanardIo {
   /** Starts a pad test. Refused before Init, before control has started (see above) and with a missing output. */
   bool StartTest(const canard::TestCommand& cmd);
 
+  /** True once Step() has called CanardControl::Update (control has started, see above). */
+  [[nodiscard]] bool Started() const { return m_started; }
+
   /** Ends a running pad test (CLI `ctrl_test stop`): the canards slew back to trim. Serialised against Step(). */
   void CancelTest();
 

@@ -71,12 +71,18 @@ sense, which is roll.
 
 ## Hardware (decided)
 
-- **Servos:** Savox SH-1250MG, four of them.
-  - Specs: digital, coreless, metal gear, 4.8–6.0 V, 4.6 kg·cm and 0.11 s/60° at 6 V, 29 g,
-    35 × 15 × 29.2 mm.
-  - Frame rate stays at 50 Hz. Raising it is a later, bench-verified change.
+- **Servos:** MKS HV6160, four of them (owner's choice, 2026-11-16; replaces the Savox
+  SH-1250MG, which one retailer lists as discontinued).
+  - Specs (retailer figures; no MKS datasheet found): digital wing servo, coreless, metal gear.
+  - Voltage: 4.8–8.4 V.
+  - Torque: 11.7 kg·cm at 4.8 V. Speed: 0.23 s/60° at 4.8 V, so a full 8° move takes ~31 ms.
+  - Size and mass: 33 × 10 × 35.2 mm, 30.7 g.
+  - Signal: 1520 µs centre, frames up to 333 Hz.
+  - Frame rate is a setting: 50 Hz default for generic servos, 333 Hz for the HV6160 once
+    bench-verified.
 - **Servo power:** from an external 5 V supply, sharing ground with the Vega. The Vega supplies the
   signal lines only; its servo rail is rated 3 A total.
+  - The supply must cover four stalled HV6160s (~1.56 A each at 4.8 V, ~6 A total).
 - **Outputs:**
   - **SERVO1:** PB4, TIM3_CH1 (existing).
   - **SERVO2:** PB5, TIM3_CH2 (existing).
@@ -169,7 +175,7 @@ sense, which is roll.
   - `ROLL_2`: both outputs `(1,0,0)`.
   - `FULL_4`: the four outputs sit at the ±t1 and ±t2 positions. Each has roll `1`, plus its sideways
     force on the tilt axis it can push (`±1`). Exact signs follow the documented frame.
-- **Conversion to pulse:** `pulse_us = 1500 + trim_k + rev_k · δ_k · ctrl_us_per_deg`.
+- **Conversion to pulse:** `pulse_us = ctrl_center_us + trim_k + rev_k · δ_k · ctrl_us_per_deg`.
   - `ctrl_us_per_deg` comes from the linkage geometry and is measured on the bench.
 - **Generic by design:** the table supports N outputs, so a future thrust-vector layout is a new
   preset, not new code.
@@ -223,7 +229,9 @@ board's saved config to defaults once.
 | `ctrl_roll_kp`, `ctrl_roll_ki` | roll gains at `v_ref` | from simulation |
 | `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | from simulation |
 | `ctrl_us_per_deg` | linkage calibration | from bench |
-| `ctrl_trim1..4` | µs offset from 1500 per output | 0 |
+| `ctrl_center_us` | servo centre pulse | 1500 (set 1520 for HV6160) |
+| `ctrl_servo_hz` | servo frame rate, applied to all claimed outputs | 50 (333 for HV6160 after bench check) |
+| `ctrl_trim1..4` | µs offset from centre per output | 0 |
 | `ctrl_rev1..4` | per-output reverse | off |
 
 The builder chooses the fixed-point/scaling of each stored field.

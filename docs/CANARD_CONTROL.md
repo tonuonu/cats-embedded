@@ -93,13 +93,13 @@ condition latches NEUTRAL_LATCHED for the rest of the flight and records its rea
 |---|---|---|
 | NONE | 0 | no latch |
 | DROGUE | 1 | drogue phase reached |
-| LOW_SPEED | 2 | speed fell below `ctrl_v_enable` in coast |
+| LOW_SPEED | 2 | speed below `ctrl_v_enable` while in COASTING only (not checked during thrust) |
 | TILT | 3 | tilt above `ctrl_abort_tilt` |
 | GYRO_SAT | 4 | a gyro axis reached 1900 deg/s |
 | IMU_FAULT | 5 | IMU eliminated or faulty |
-| AUTHORITY | 6 | roll authority check: roll rate above 90 deg/s for 0.5 s while the roll command is saturated against it (loop not working) |
+| AUTHORITY | 6 | CLOSED only. Roll authority check: roll rate above 90 deg/s for 0.5 s while the roll command is saturated against it (loop not working) |
 | STEP_DONE | 7 | last STEP doublet finished |
-| STEP_ROLL_RATE | 8 | STEP aborted: roll rate above 360 deg/s |
+| STEP_ROLL_RATE | 8 | STEP only. Roll rate above 360 deg/s |
 | SIM | 9 | `sim` run (the servos never move in a sim) |
 
 ## Flight plan
@@ -115,7 +115,10 @@ Fly in three steps. Change only `ctrl_flight_mode` between flights.
    at each doublet.
 3. **CLOSED**: the controller drives the canards, with gains updated from the STEP flight.
 
-All exit conditions apply in every mode.
+The exits SIM, IMU_FAULT, GYRO_SAT, DROGUE and TILT apply in every mode. DROGUE latches
+immediately when the drogue phase is entered. AUTHORITY is checked in CLOSED only, so the authority
+check does **not** protect a STEP flight; a STEP flight is protected by the 360 deg/s roll-rate exit
+(STEP_ROLL_RATE) instead. LOW_SPEED applies only in COASTING.
 
 ## Logging: CONTROL_INFO
 

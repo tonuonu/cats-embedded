@@ -31,7 +31,7 @@ float RollController::Update(float roll_rate_dps, float gain_scale, float kp, fl
 }
 
 void TiltController::Update(const float tilt_deg[2], const float rate_t_dps[2], float gain_scale, float kp, float kd,
-                            float v_mps, float tilt_v_min, float out_u[2]) const {
+                            float v_mps, float tilt_v_min, float out_u[2]) {
   if (v_mps < tilt_v_min) {
     out_u[0] = 0.0F;
     out_u[1] = 0.0F;

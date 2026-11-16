@@ -46,34 +46,31 @@ void Roll_ZeroKi_NoClampCrash() {
 }
 
 void Tilt_ZeroBelowVmin() {
-  TiltController c;
   const float tilt[2] = {5.0F, 5.0F};
   const float rate[2] = {10.0F, 10.0F};
   float u[2] = {9.0F, 9.0F};
-  c.Update(tilt, rate, 1.0F, 1.0F, 0.1F, 69.0F, 70.0F, u);
+  TiltController::Update(tilt, rate, 1.0F, 1.0F, 0.1F, 69.0F, 70.0F, u);
   TEST_ASSERT_EQUAL_FLOAT(0.0F, u[0]);
   TEST_ASSERT_EQUAL_FLOAT(0.0F, u[1]);
 }
 
 void Tilt_PushesNoseBack() {
-  TiltController c;
   const float tilt[2] = {5.0F, 0.0F};
   const float rate[2] = {0.0F, 0.0F};
   float u[2] = {9.0F, 9.0F};
-  c.Update(tilt, rate, 1.0F, 1.0F, 0.0F, 100.0F, 70.0F, u);
+  TiltController::Update(tilt, rate, 1.0F, 1.0F, 0.0F, 100.0F, 70.0F, u);
   TEST_ASSERT_TRUE(u[0] < 0.0F);
   TEST_ASSERT_EQUAL_FLOAT(0.0F, u[1]);
 }
 
 void Tilt_RateDamping_Signs() {
-  TiltController c;
   const float tilt[2] = {0.0F, 0.0F};
   const float r1[2] = {0.0F, 10.0F};
   const float r2[2] = {10.0F, 0.0F};
   float u[2] = {};
-  c.Update(tilt, r1, 1.0F, 0.0F, 0.1F, 100.0F, 70.0F, u);
+  TiltController::Update(tilt, r1, 1.0F, 0.0F, 0.1F, 100.0F, 70.0F, u);
   TEST_ASSERT_FLOAT_WITHIN(1e-5F, -1.0F, u[0]);
-  c.Update(tilt, r2, 1.0F, 0.0F, 0.1F, 100.0F, 70.0F, u);
+  TiltController::Update(tilt, r2, 1.0F, 0.0F, 0.1F, 100.0F, 70.0F, u);
   TEST_ASSERT_FLOAT_WITHIN(1e-5F, 1.0F, u[1]);
 }
 
@@ -101,33 +98,30 @@ void Roll_GainScale_Doubles() {
 }
 
 void Tilt_PushesNoseBack_T2() {
-  TiltController c;
   const float tilt[2] = {0.0F, 5.0F};
   const float rate[2] = {0.0F, 0.0F};
   float u[2] = {9.0F, 9.0F};
-  c.Update(tilt, rate, 1.0F, 1.0F, 0.0F, 100.0F, 70.0F, u);
+  TiltController::Update(tilt, rate, 1.0F, 1.0F, 0.0F, 100.0F, 70.0F, u);
   TEST_ASSERT_EQUAL_FLOAT(0.0F, u[0]);
   TEST_ASSERT_TRUE(u[1] < 0.0F);
 }
 
 void Tilt_GainScale_Doubles() {
-  TiltController c;
   const float tilt[2] = {3.0F, -2.0F};
   const float rate[2] = {4.0F, 5.0F};
   float a[2] = {};
   float b[2] = {};
-  c.Update(tilt, rate, 1.0F, 1.0F, 0.1F, 100.0F, 70.0F, a);
-  c.Update(tilt, rate, 2.0F, 1.0F, 0.1F, 100.0F, 70.0F, b);
+  TiltController::Update(tilt, rate, 1.0F, 1.0F, 0.1F, 100.0F, 70.0F, a);
+  TiltController::Update(tilt, rate, 2.0F, 1.0F, 0.1F, 100.0F, 70.0F, b);
   TEST_ASSERT_FLOAT_WITHIN(1e-5F, 2.0F * a[0], b[0]);
   TEST_ASSERT_FLOAT_WITHIN(1e-5F, 2.0F * a[1], b[1]);
 }
 
 void Tilt_AtVmin_Active() {
-  TiltController c;
   const float tilt[2] = {5.0F, 0.0F};
   const float rate[2] = {0.0F, 0.0F};
   float u[2] = {};
-  c.Update(tilt, rate, 1.0F, 1.0F, 0.0F, 70.0F, 70.0F, u);
+  TiltController::Update(tilt, rate, 1.0F, 1.0F, 0.0F, 70.0F, 70.0F, u);
   TEST_ASSERT_TRUE(u[0] < 0.0F);
 }
 

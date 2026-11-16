@@ -52,7 +52,6 @@ class CanardControl {
   CanardParams m_params{};
   ControlAttitude m_attitude{};
   RollController m_roll{};
-  TiltController m_tilt{};
   Envelope m_envelope{};
   TestCommand m_test{};
   bool m_test_running = false;

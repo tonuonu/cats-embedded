@@ -166,7 +166,8 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
   const float u_roll = m_roll.Update(m_roll_rate_dps, scale, m_params.roll_kp, m_params.roll_ki, max_defl, in.dt_s);
   float u_tilt[2] = {0.0F, 0.0F};
   if (m_params.layout == Layout::kFull4) {
-    m_tilt.Update(m_tilt_deg, rate_t, scale, m_params.tilt_kp, m_params.tilt_kd, v_ctrl, m_params.tilt_v_min, u_tilt);
+    TiltController::Update(m_tilt_deg, rate_t, scale, m_params.tilt_kp, m_params.tilt_kd, v_ctrl, m_params.tilt_v_min,
+                           u_tilt);
   }
   float controller_deg[4];
   Mix(m_params.layout, u_roll, u_tilt[0], u_tilt[1], max_defl, controller_deg);

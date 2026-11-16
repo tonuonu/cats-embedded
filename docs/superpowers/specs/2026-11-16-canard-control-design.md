@@ -234,7 +234,7 @@ Exit conditions from `ACTIVE`, each latching and logged with its reason:
 - any gyro axis reaches ≥ 1900 °/s (near saturation);
 - preprocessing reports the IMU as eliminated or faulty;
 - **roll authority check (owner's call, after review):** |roll rate| stays above a threshold
-  (default 180 °/s) for 0.5 s while the roll command is saturated in the opposing direction. That
+  (default 90 °/s; 180 in the first draft, lowered after the closed-loop sim showed a reversed loop settling at 114–157 °/s) for 0.5 s while the roll command is saturated in the opposing direction. That
   means the loop is not working, possibly because canard wake on the aft fins reverses the roll
   effect.
 

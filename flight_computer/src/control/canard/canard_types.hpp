@@ -28,42 +28,42 @@ enum class LatchReason : uint8_t {
 };
 
 struct CanardParams {
-  Layout layout;
-  FlightMode mode;
-  float v_enable, v_ref, tilt_v_min, max_defl_deg, abort_tilt_deg;
-  float roll_kp, roll_ki, tilt_kp, tilt_kd;
-  StepAxis step_axis;
-  float step_defl_deg, step_s, step_delay_s, step_period_s;
-  uint8_t step_count;
+  Layout layout = Layout::kOff;
+  FlightMode mode = FlightMode::kShadow;
+  float v_enable = 0.0F, v_ref = 0.0F, tilt_v_min = 0.0F, max_defl_deg = 0.0F, abort_tilt_deg = 0.0F;
+  float roll_kp = 0.0F, roll_ki = 0.0F, tilt_kp = 0.0F, tilt_kd = 0.0F;
+  StepAxis step_axis = StepAxis::kRoll;
+  float step_defl_deg = 0.0F, step_s = 0.0F, step_delay_s = 0.0F, step_period_s = 0.0F;
+  uint8_t step_count = 0;
   float authority_rate_dps = 180, authority_time_s = 0.5F, step_abort_rate_dps = 360, gyro_sat_dps = 1900;
-  float slew_dps;
+  float slew_dps = 0.0F;
 };
 
 struct ControlInputs {
-  float gyro_board_dps[3];
-  float acc_board_mps2[3];
-  uint8_t long_axis;
-  float long_sign;
-  float velocity_mps, altitude_agl_m;
-  Phase phase;
-  bool imu_faulty, sim_running;
-  float dt_s;
+  float gyro_board_dps[3] = {};
+  float acc_board_mps2[3] = {};
+  uint8_t long_axis = 0;
+  float long_sign = 1.0F;
+  float velocity_mps = 0.0F, altitude_agl_m = 0.0F;
+  Phase phase = Phase::kCalibrating;
+  bool imu_faulty = false, sim_running = false;
+  float dt_s = 0.0F;
 };
 
 struct ControlOutputs {
-  float defl_deg[4];
+  float defl_deg[4] = {};
   /// Would-be command, logged for SHADOW mode.
-  float cmd_deg[4];
-  uint8_t n_outputs;
-  EnvState state;
-  LatchReason reason;
-  float roll_rate_dps, tilt_deg[2];
+  float cmd_deg[4] = {};
+  uint8_t n_outputs = 0;
+  EnvState state = EnvState::kDisabled;
+  LatchReason reason = LatchReason::kNone;
+  float roll_rate_dps = 0.0F, tilt_deg[2] = {};
 };
 
 struct TestCommand {
-  enum class Kind : uint8_t { kNone, kSweep, kLive } kind;
-  float forced_v_mps;
-  float duration_s;
+  enum class Kind : uint8_t { kNone, kSweep, kLive } kind = Kind::kNone;
+  float forced_v_mps = 0.0F;
+  float duration_s = 0.0F;
 };
 
 }  // namespace control::canard

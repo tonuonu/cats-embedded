@@ -28,6 +28,14 @@ uint8_t canard_boot_layout();
  */
 bool canard_outputs_claimed(uint8_t servo_index);
 
+/** True when layout (a canard::Layout value) owns event servo output servo_index (0 = SERVO1, 1 = SERVO2). */
+bool canard_layout_claims(uint8_t layout, uint8_t servo_index);
+
+/** Events whose actions use ACT_SERVO_ONE/ACT_SERVO_TWO on an output that layout claims: bit e set for event e
+ * (cats_event_e). Those actions are ignored at runtime; the CLI and the boot log warn about them.
+ */
+uint16_t canard_claimed_servo_events(uint8_t layout);
+
 /** Trim of canard output k (0..3) in cfg, in us, clamped to +-300 us; 0 for k > 3. */
 int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k);
 

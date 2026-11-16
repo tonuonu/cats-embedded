@@ -11,6 +11,7 @@
 #include "util/enum_str_maps.hpp"
 
 #include "control/canard/canard_types.hpp"
+#include "control/canard_io.hpp"
 
 #include <cstddef>
 
@@ -29,6 +30,31 @@ static_assert(static_cast<size_t>(canard::StepAxis::kRoll) == 0 && static_cast<s
 static void ctrl_reboot_note(const cli_value_t *var) {
   cli_print_linefeed();
   cli_printf("%s takes effect after save + reboot", var->name);
+}
+
+/* Warns about event servo actions on outputs that layout claims: they are ignored at runtime (warn only). */
+static void warn_claimed_servo_actions(uint8_t layout) {
+  const uint16_t events = canard_claimed_servo_events(layout);
+  for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
+    if ((events & (1U << e)) != 0U) {
+      cli_print_linefeed();
+      cli_printf(
+          "warning: event %s has a SERVO_ONE/SERVO_TWO action; ctrl_layout %s owns SERVO1/SERVO2, so it is ignored",
+          event_map[e], ctrl_layout_map[layout]);
+    }
+  }
+}
+
+/* set ev_*: checked against the layout running now and the one configured for the next boot. */
+static void ev_servo_check(const cli_value_t * /*var*/) {
+  const uint8_t configured = global_cats_config.canard.layout;
+  warn_claimed_servo_actions(canard_layout_claims(canard_boot_layout(), 0U) ? canard_boot_layout() : configured);
+}
+
+/* set ctrl_layout: reboot note, then the event servo actions the new layout would claim. */
+static void ctrl_layout_cb(const cli_value_t *var) {
+  ctrl_reboot_note(var);
+  warn_claimed_servo_actions(global_cats_config.canard.layout);
 }
 
 const cli_value_t value_table[] = {
@@ -84,30 +110,48 @@ const cli_value_t value_table[] = {
     {"ev_calibrate",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_CALIBRATE])},
-    {"ev_ready", VAR_INT16 | MODE_ARRAY, {.array = {.length = 16}}, offsetof(cats_config_t, action_array[EV_READY])},
+     offsetof(cats_config_t, action_array[EV_CALIBRATE]),
+     ev_servo_check},
+    {"ev_ready",
+     VAR_INT16 | MODE_ARRAY,
+     {.array = {.length = 16}},
+     offsetof(cats_config_t, action_array[EV_READY]),
+     ev_servo_check},
     {"ev_liftoff",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_LIFTOFF])},
-    {"ev_burnout", VAR_INT16 | MODE_ARRAY, {.array = {.length = 16}}, offsetof(cats_config_t, action_array[EV_MAX_V])},
-    {"ev_apogee", VAR_INT16 | MODE_ARRAY, {.array = {.length = 16}}, offsetof(cats_config_t, action_array[EV_APOGEE])},
+     offsetof(cats_config_t, action_array[EV_LIFTOFF]),
+     ev_servo_check},
+    {"ev_burnout",
+     VAR_INT16 | MODE_ARRAY,
+     {.array = {.length = 16}},
+     offsetof(cats_config_t, action_array[EV_MAX_V]),
+     ev_servo_check},
+    {"ev_apogee",
+     VAR_INT16 | MODE_ARRAY,
+     {.array = {.length = 16}},
+     offsetof(cats_config_t, action_array[EV_APOGEE]),
+     ev_servo_check},
     {"ev_main_deployment",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_MAIN_DEPLOYMENT])},
+     offsetof(cats_config_t, action_array[EV_MAIN_DEPLOYMENT]),
+     ev_servo_check},
     {"ev_touchdown",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_TOUCHDOWN])},
+     offsetof(cats_config_t, action_array[EV_TOUCHDOWN]),
+     ev_servo_check},
     {"ev_custom1",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_CUSTOM_1])},
+     offsetof(cats_config_t, action_array[EV_CUSTOM_1]),
+     ev_servo_check},
     {"ev_custom2",
      VAR_INT16 | MODE_ARRAY,
      {.array = {.length = 16}},
-     offsetof(cats_config_t, action_array[EV_CUSTOM_2])},
+     offsetof(cats_config_t, action_array[EV_CUSTOM_2]),
+     ev_servo_check},
 
     // Servo position
     {"servo1_init_pos", VAR_INT16, {.minmax_unsigned = {0, 1000}}, offsetof(cats_config_t, initial_servo_position[0])},
@@ -139,7 +183,7 @@ const cli_value_t value_table[] = {
      VAR_UINT8 | MODE_LOOKUP,
      {.lookup = {TABLE_CTRL_LAYOUT}},
      offsetof(cats_config_t, canard.layout),
-     ctrl_reboot_note},
+     ctrl_layout_cb},
     {"ctrl_flight_mode",
      VAR_UINT8 | MODE_LOOKUP,
      {.lookup = {TABLE_CTRL_MODE}},

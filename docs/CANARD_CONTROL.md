@@ -30,7 +30,8 @@ Design background: `docs/superpowers/specs/2026-11-16-canard-control-design.md`.
 | `FULL_4` | 4 | SERVO1, SERVO2, plus outputs 3 and 4 on the UART2 pins PA2 (TX) and PA3 (RX). UART2 is then not available as a serial port. |
 
 A layout other than `OFF` claims its outputs: event actions `ACT_SERVO_ONE`/`ACT_SERVO_TWO` on a
-claimed output are ignored.
+claimed output are ignored. The CLI warns about such actions after `set ev_...` or
+`set ctrl_layout`, and the boot log warns about them once; the actions are kept, not refused.
 
 ## Settings
 

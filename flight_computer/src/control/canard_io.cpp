@@ -13,6 +13,8 @@
 #include "control/canard/mixer.hpp"
 #include "drivers/servo_output.hpp"
 #include "flash/recorder.hpp"
+#include "util/actions.hpp"
+#include "util/enum_str_maps.hpp"
 #include "util/log.h"
 
 namespace {
@@ -69,8 +71,32 @@ const canard_config_t& canard_boot_config() { return boot_config; }
 
 uint8_t canard_boot_layout() { return boot_layout; }
 
-bool canard_outputs_claimed(uint8_t servo_index) {
-  return boot_layout != static_cast<uint8_t>(canard::Layout::kOff) && servo_index < 2U;
+bool canard_layout_claims(uint8_t layout, uint8_t servo_index) {
+  const bool canard_on =
+      layout == static_cast<uint8_t>(canard::Layout::kRoll2) || layout == static_cast<uint8_t>(canard::Layout::kFull4);
+  return canard_on && servo_index < 2U;
+}
+
+bool canard_outputs_claimed(uint8_t servo_index) { return canard_layout_claims(boot_layout, servo_index); }
+
+uint16_t canard_claimed_servo_events(uint8_t layout) {
+  uint16_t events = 0U;
+  for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
+    const auto event = static_cast<cats_event_e>(e);
+    const uint16_t n = cc_get_num_actions(event);
+    for (uint16_t i = 0U; i < n; ++i) {
+      config_action_t action{};
+      if (!cc_get_action(event, i, &action)) {
+        continue;
+      }
+      const bool servo_one = action.action_idx == ACT_SERVO_ONE && canard_layout_claims(layout, 0U);
+      const bool servo_two = action.action_idx == ACT_SERVO_TWO && canard_layout_claims(layout, 1U);
+      if (servo_one || servo_two) {
+        events = static_cast<uint16_t>(events | (1U << e));
+      }
+    }
+  }
+  return events;
 }
 
 int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k) {
@@ -133,6 +159,13 @@ void CanardIo::Init() {
     if (global_canard_outputs[k] == nullptr) {
       m_output_fault = true;
       log_error("Canard output %u missing: canards held at trim, IMU fault latch", k + 1U);
+    }
+  }
+
+  const uint16_t servo_events = canard_claimed_servo_events(canard_boot_layout());
+  for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
+    if ((servo_events & (1U << e)) != 0U) {
+      log_warn("Event %s: servo action ignored, the canard layout owns SERVO1/SERVO2", event_map[e]);
     }
   }
 }

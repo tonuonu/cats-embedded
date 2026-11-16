@@ -36,8 +36,10 @@ claimed output are ignored.
 
 Set them in the CLI (`get ctrl_` lists all), then `save`.
 
-**`ctrl_layout` takes effect only after `save` and a reboot.** The layout is latched at boot; a `set`
-without a reboot changes nothing. The CLI prints a reminder.
+**Every `ctrl_` setting takes effect only after `save` and a reboot.** All canard settings are
+latched at boot (layout, mode, gains, speeds, limits, STEP timing, centre, us per degree, trim,
+reverse, servo rate); a `set` without a reboot changes nothing in the running firmware. The CLI
+prints a reminder after each `set ctrl_...`.
 
 | Setting | Range | Default | Unit / meaning |
 |---|---|---|---|

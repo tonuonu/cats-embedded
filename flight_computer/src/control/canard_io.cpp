@@ -20,8 +20,10 @@ namespace {
 constexpr uint8_t kNumOutputs = 4U;
 constexpr int16_t kMaxTrimUs = 300;
 
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) written once at boot
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) written once at boot
 uint8_t boot_layout = static_cast<uint8_t>(canard::Layout::kOff);
+canard_config_t boot_config{};
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 canard::Phase ToPhase(flight_fsm_e fsm) {
   switch (fsm) {
@@ -56,11 +58,14 @@ T ScaleSat(float value, float scale) {
 
 }  // namespace
 
-void canard_latch_boot_layout() {
-  const auto layout = static_cast<canard::Layout>(global_cats_config.canard.layout);
+void canard_latch_boot_config() {
+  boot_config = global_cats_config.canard;
+  const auto layout = static_cast<canard::Layout>(boot_config.layout);
   const bool canard_on = (layout == canard::Layout::kRoll2) || (layout == canard::Layout::kFull4);
   boot_layout = static_cast<uint8_t>(canard_on ? layout : canard::Layout::kOff);
 }
+
+const canard_config_t& canard_boot_config() { return boot_config; }
 
 uint8_t canard_boot_layout() { return boot_layout; }
 
@@ -68,11 +73,11 @@ bool canard_outputs_claimed(uint8_t servo_index) {
   return boot_layout != static_cast<uint8_t>(canard::Layout::kOff) && servo_index < 2U;
 }
 
-int16_t canard_trim_us(uint8_t k) {
+int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k) {
   if (k >= kNumOutputs) {
     return 0;
   }
-  const int16_t trim = global_cats_config.canard.trim_us[k];
+  const int16_t trim = cfg.trim_us[k];
   if (trim > kMaxTrimUs) {
     return kMaxTrimUs;
   }
@@ -82,7 +87,7 @@ int16_t canard_trim_us(uint8_t k) {
   return trim;
 }
 
-bool canard_reverse(uint8_t k) { return k < kNumOutputs && global_cats_config.canard.reverse[k] != 0U; }
+bool canard_reverse(const canard_config_t& cfg, uint8_t k) { return k < kNumOutputs && cfg.reverse[k] != 0U; }
 
 void CanardIo::Init() {
   if (m_mutex == nullptr) {
@@ -95,7 +100,8 @@ void CanardIo::Init() {
     m_mutex = osMutexNew(&attr);
   }
 
-  const canard_config_t& cfg = global_cats_config.canard;
+  m_cfg = canard_boot_config();
+  const canard_config_t& cfg = m_cfg;
   canard::CanardParams p{};  // The authority, gyro saturation and slew limits keep their CanardParams defaults.
   p.layout = static_cast<canard::Layout>(canard_boot_layout());
   p.mode = cfg.flight_mode <= static_cast<uint8_t>(canard::FlightMode::kClosed)
@@ -171,13 +177,12 @@ void CanardIo::Step(uint32_t tick, flight_fsm_e fsm, const SI_data_t& si, float 
     log_error("Canard control: no IMU calibration at liftoff, canards held at trim");
   }
 
-  const canard_config_t& cfg = global_cats_config.canard;
-  const float us_per_deg = static_cast<float>(cfg.us_per_deg_deci) / 10.0F;
+  const float us_per_deg = static_cast<float>(m_cfg.us_per_deg_deci) / 10.0F;
   for (uint8_t k = 0; k < out.n_outputs && k < kNumOutputs; ++k) {
     driver::ServoOutput* const output = global_canard_outputs[k];
     if (output != nullptr) {
-      output->SetPulseUs(
-          canard::PulseUs(out.defl_deg[k], cfg.center_us, canard_trim_us(k), canard_reverse(k), us_per_deg));
+      output->SetPulseUs(canard::PulseUs(out.defl_deg[k], m_cfg.center_us, canard_trim_us(m_cfg, k),
+                                         canard_reverse(m_cfg, k), us_per_deg));
     }
   }
 

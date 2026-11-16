@@ -25,6 +25,12 @@ static_assert(static_cast<size_t>(canard::StepAxis::kRoll) == 0 && static_cast<s
 
 #undef LOOKUP_TABLE_ENTRY
 
+/* The output setup follows the layout latched at boot (control/canard_io.hpp). */
+static void ctrl_layout_note(const cli_value_t * /*var*/) {
+  cli_print_linefeed();
+  cli_print("ctrl_layout takes effect after save + reboot");
+}
+
 const cli_value_t value_table[] = {
     // Control
     {"acc_threshold",
@@ -129,7 +135,11 @@ const cli_value_t value_table[] = {
      offsetof(cats_config_t, telemetry_settings.adaptive_power)},
 
     // Canard control
-    {"ctrl_layout", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_CTRL_LAYOUT}}, offsetof(cats_config_t, canard.layout)},
+    {"ctrl_layout",
+     VAR_UINT8 | MODE_LOOKUP,
+     {.lookup = {TABLE_CTRL_LAYOUT}},
+     offsetof(cats_config_t, canard.layout),
+     ctrl_layout_note},
     {"ctrl_flight_mode", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_CTRL_MODE}}, offsetof(cats_config_t, canard.flight_mode)},
     {"ctrl_v_enable", VAR_UINT16, {.minmax_unsigned = {10, 100}}, offsetof(cats_config_t, canard.v_enable_mps)},
     {"ctrl_v_ref", VAR_UINT16, {.minmax_unsigned = {20, 300}}, offsetof(cats_config_t, canard.v_ref_mps)},

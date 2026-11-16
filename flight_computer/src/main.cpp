@@ -45,12 +45,12 @@ static void init_logging() {
   log_enable();
 }
 
-/** Builds the canard servo outputs of the configured layout and sets them to centre + trim. They are started with the
+/** Builds the canard servo outputs of the boot layout and sets them to centre + trim. They are started with the
  * other PWM channels. An output whose timer cannot be configured stays nullptr and never pulses.
  */
 static void init_canard_outputs() {
   const canard_config_t& cfg = global_cats_config.canard;
-  const auto layout = static_cast<canard::Layout>(cfg.layout);
+  const auto layout = static_cast<canard::Layout>(canard_boot_layout());
 
   static driver::ServoOutput canard_out1(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_1);
   static driver::ServoOutput canard_out2(SERVO_TIMER_HANDLE, SERVO_TIMER_CHANNEL_2);
@@ -71,7 +71,7 @@ static void init_canard_outputs() {
       continue;
     }
     // Neutral pulse: centre + trim, clamped like every flight pulse.
-    outputs[k]->SetPulseUs(canard::PulseUs(0.0F, cfg.center_us, cfg.trim_us[k], false, 0.0F));
+    outputs[k]->SetPulseUs(canard::PulseUs(0.0F, cfg.center_us, canard_trim_us(k), false, 0.0F));
     global_canard_outputs[k] = outputs[k];
   }
 }
@@ -128,6 +128,8 @@ int main() {
   load_and_set_config();
   log_info("Config load complete.");
 
+  // The output setup below and the event-action ownership both follow this snapshot until the next reboot.
+  canard_latch_boot_layout();
   if (canard_outputs_claimed(0U)) {
     // The canard layout owns SERVO1/SERVO2: no event servos, global_servo1/2 stay nullptr.
     init_canard_outputs();

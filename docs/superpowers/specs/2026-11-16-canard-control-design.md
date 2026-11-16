@@ -1,6 +1,6 @@
 # Canard roll and vertical control for CATS Vega — design
 
-Date: 2026-11-16 · Branch: `feature/canard-control` · Status: draft for owner approval
+Date: 2026-11-16 · Branch: `feature/canard-control` · Status: approved 2026-11-16 (Fable, delegated by owner)
 
 ## Intent
 
@@ -12,6 +12,11 @@ up, using canards driven by the Vega's servo outputs.
   and it could be offered upstream. It must be configuration-gated and off by default.
 - **First vehicle:** the owner's Apogee Peregrine ("SIPSIK"). Specs: 100 mm body, 1.75 m long,
   2.35–3.1 kg, 38 mm motor mount. Peak speed on the J350 L2 flight was 173 m/s.
+  - With the camera nose, canards and Vega in the nose, OpenRocket (`PeregrineL2-CamNose.ork`)
+    gives 4.32 kg at liftoff, 138 m/s peak and 804 m apogee on the J350. Rail-exit margin is
+    1.69 cal, 2.3–3 cal in flight.
+  - The nose mass is a solid-PETG upper bound, so the real vehicle will be somewhat lighter and
+    faster.
   - Roll on that L2 flight was 0.26 turns from liftoff to apogee, with a brief 114 °/s peak in boost.
   - So the Peregrine is a test bed for proving the control system, not a vehicle that badly needs it.
 - **Later:** the same control code (estimator, control envelope, mixer, logging) should carry over
@@ -94,8 +99,9 @@ sense, which is roll.
     recovery config change is needed.
 - **Servo power:** directly from the camera's 2S 18650 pack (6.0–8.4 V, inside the HV6160's
   4.8–8.4 V), through a 7.5 A fuse, with 1000 µF at the cassette.
-  - Cells: Samsung INR18650-25R, a generic high-drain cell rated 2500 mAh and 20 A continuous. That
-    covers four stalled servos (~11 A worst case) plus the camera.
+  - Cells: Samsung INR18650-25R, a generic high-drain cell rated 2500 mAh and 20 A continuous. The fuse
+    protects the wiring from a shorted servo; a sustained four-servo stall opens it and the canards
+    trail to neutral.
   - The Vega has its own 2S LiPo, so servo sag can never brown out recovery.
   - The Vega servo connectors carry signal and ground only; the 5 V pin is unconnected.
   - Bench-verify stall current at 8.4 V (estimated ~2.7 A each) and operation from the Vega's
@@ -103,7 +109,7 @@ sense, which is roll.
 - **Barometer:** the Vega sits in a sealed compartment vented by 4 × Ø2.5 mm ports in the ogive,
   between the canards.
   - Ogive ports are not at true static pressure. The error grows with dynamic pressure; rough size
-    ~76 m altitude and ~13 m/s velocity at 173 m/s for Cp = 0.05.
+    ~50 m altitude and up to ~14 m/s (10 % of speed) at 138 m/s for Cp = 0.05.
   - That biases the Kalman velocity used by the gain schedule and `ctrl_v_enable`. It vanishes at
     apogee and at main. The SHADOW flight measures it.
 - **Outputs:**
@@ -116,7 +122,7 @@ sense, which is roll.
 - **Constraints the canard mechanics must meet (Rocket-Parts, out of scope here):**
   - Canards are forward of the CG.
   - Each pivot is near the canard's centre of pressure (~25 % chord), so the hinge moment stays well
-    inside the servo torque at 173 m/s.
+    inside the servo torque at 173 m/s (the sizing case; the canard vehicle peaks near 138 m/s).
   - Mechanical stops sit just beyond the configured maximum deflection.
   - With every canard at full deflection, the fins must still win: the rocket trims to a small
     angle of attack and stays stable.
@@ -188,6 +194,8 @@ sense, which is roll.
   while the output saturates). The integral term absorbs canard misalignment.
 - **Tilt** (`FULL_4` only): PD per transverse axis, `u = −Kp·tilt − Kd·rate`, driving the tilt
   vector to zero.
+  - Tilt commands are zero below `ctrl_tilt_v_min`; only roll is controlled there. At low speed the
+    canards can't out-turn gravity on this vehicle.
 - **Limits:** all commands are in canard degrees and clamped to `ctrl_max_defl`. A slew limit
   protects the servos.
 
@@ -199,6 +207,8 @@ sense, which is roll.
   - `ROLL_2`: both outputs `(1,0,0)`.
   - `FULL_4`: the four outputs sit at the ±t1 and ±t2 positions. Each has roll `1`, plus its sideways
     force on the tilt axis it can push (`±1`). Exact signs follow the documented frame.
+- **Saturation:** roll has priority. If any |δ_k| would exceed `ctrl_max_defl`, the tilt commands
+  are scaled down together until it fits.
 - **Conversion to pulse:** `pulse_us = ctrl_center_us + trim_k + rev_k · δ_k · ctrl_us_per_deg`.
   - `ctrl_us_per_deg` comes from the linkage geometry and is measured on the bench.
 - **Generic by design:** the table supports N outputs, so a future thrust-vector layout is a new
@@ -239,17 +249,18 @@ all exit conditions apply in every mode.
 `STEP` doublets (reviewed with Fable, 2026-11-16):
 - **When:** `ctrl_step_count` doublets. The first starts `ctrl_step_delay_ms` after the FSM enters
   COASTING; the rest follow every `ctrl_step_period_ms`.
-  - With the defaults that is 0.3 s, 2.3 s and 4.3 s into coast, at roughly 160, 115 and 85 m/s.
+  - With the defaults that is 0.3 s, 2.3 s and 4.3 s into coast, at roughly 130, 100 and 70 m/s on the canard vehicle.
   - Several dynamic-pressure points let the flight test the 1/q gain schedule; one doublet can't.
 - **Shape:** each doublet commands `±ctrl_step_defl` on `ctrl_step_axis` (`ROLL`; `T1`/`T2` only in
   `FULL_4`) for `ctrl_step_ms`, then the opposite sign for `ctrl_step_ms`, then trim.
   - The leading sign alternates + − +.
-- **Defaults:** axis `ROLL`, 2°, 300 ms per side, delay 300 ms, count 3, period 2000 ms.
-  - 2° gives about 98 °/s of steady roll at 173 m/s if the canards act alone. That is a clear
-    signal, well under the exit threshold, and still ~30 °/s if the fins cancel 70 %.
+- **Defaults:** axis `ROLL`, 3°, 300 ms per side, delay 300 ms, count 3, period 2000 ms.
+  - 3° gives about 112, 84 and 60 °/s of steady roll at the three doublets if the canards act
+    alone (scaled from the CAD's 1.5 rev/s at 11° and 173 m/s). That is under a third of the exit
+    threshold, and still ~18–34 °/s if the fins cancel 70 %.
 - **Latch:** after the last doublet, `NEUTRAL_LATCHED` (reason "step done").
 - **Extra exit:** |roll rate| > 360 °/s → neutral latch.
-- **Analysis:** q falls about 40 % per second in coast, so speed does not change slowly. Fit the
+- **Analysis:** q falls about 30–35 % per second in coast, so speed does not change slowly. Fit the
   measured roll acceleration against the logged q and V at each doublet, rather than reading it off
   a plateau. That gives the roll effectiveness (sign, size, and how it scales with q) to feed back
   into the simulation and gains.
@@ -261,7 +272,7 @@ all exit conditions apply in every mode.
   - `initial_servo_position` is ignored for claimed outputs.
   - The CLI warns when such actions are configured.
 - **`FULL_4` setup:** right after the config loads, USART2 is de-initialised and PA2/PA3 are switched
-  to TIM2_CH3/CH4 at 50 Hz.
+  to TIM2_CH3/CH4 at `ctrl_servo_hz`.
 
 ### Settings (CLI)
 
@@ -275,8 +286,9 @@ board's saved config to defaults once.
 | `ctrl_v_ref` | m/s, gain reference speed | 100 |
 | `ctrl_max_defl` | deg, command clamp | 8 |
 | `ctrl_flight_mode` | `SHADOW` / `STEP` / `CLOSED` | `SHADOW` |
-| `ctrl_step_axis`, `ctrl_step_defl`, `ctrl_step_ms`, `ctrl_step_delay_ms`, `ctrl_step_count`, `ctrl_step_period_ms` | step-test doublets | `ROLL`, 2°, 300 ms, 300 ms, 3, 2000 ms |
+| `ctrl_step_axis`, `ctrl_step_defl`, `ctrl_step_ms`, `ctrl_step_delay_ms`, `ctrl_step_count`, `ctrl_step_period_ms` | step-test doublets | `ROLL`, 3°, 300 ms, 300 ms, 3, 2000 ms |
 | `ctrl_abort_tilt` | deg, latch-to-neutral tilt | 30 |
+| `ctrl_tilt_v_min` | m/s, tilt control off below this (`FULL_4`) | 70 |
 | `ctrl_roll_kp`, `ctrl_roll_ki` | roll gains at `v_ref` | from simulation |
 | `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | from simulation |
 | `ctrl_us_per_deg` | linkage calibration | from bench |
@@ -330,11 +342,11 @@ The builder chooses the fixed-point/scaling of each stored field.
 - **Host closed-loop simulation:**
   - Rotational dynamics of the Peregrine: inertia, fin restoring moment, canard moment, roll
     disturbance from canard misalignment, wind gusts.
-  - Use the Peregrine's OpenRocket data (`~/MyLevel1Peregrine/openrocket/PeregrineL2.ork`).
-    It has 3 aft fins and no canards yet.
-  - Canard geometry and the servo bay mass come from the nosecone CAD work, which runs in parallel.
-    Until then the simulation is parametric and the gains are placeholders. The pass criteria are
-    checked once real geometry exists.
+  - Use `openrocket/PeregrineL2-CamNose.ork` (MyLevel1Peregrine, commit f05c608) for mass,
+    inertia, CG and speed profile.
+  - Use the canard geometry from Rocket-Parts commit 59cd4d5: 875 mm² panels, pivot 50 mm above the
+    nose base, canards at 15/105/195/285°.
+  - Sweep vehicle mass from −15 % to nominal, since the nose mass is an upper bound.
   - **Canard–fin interaction:** canard wake on the aft fins can cancel or reverse the roll effect,
     and that can't be quantified from existing data. So the roll effectiveness is a simulation
     parameter, swept from full to zero to reversed.
@@ -343,7 +355,8 @@ The builder chooses the fixed-point/scaling of each stored field.
   - Gains come from here.
   - Pass criteria:
     - roll: 360 °/s at 100 m/s damped below 20 °/s within 1 s;
-    - `FULL_4`: a 5° tilt at ≥ 60 m/s reduced below 1° within 2 s;
+    - `FULL_4`: a 5° tilt at 100 m/s reduced below 2° within 2 s; at 70 m/s the tilt must not grow;
+      below `ctrl_tilt_v_min` the tilt outputs are zero;
     - every abort condition latches to neutral;
     - a stuck full-deflection output keeps the vehicle stable.
 - **Log replay:** feed `fl002.cfl` (the L2 J350 flight) IMU data through the control estimator and

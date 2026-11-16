@@ -19,6 +19,8 @@ state_estimation_input_t Preprocessing::GetEstimationInput() const noexcept { re
 
 SI_data_t Preprocessing::GetSIData() const noexcept { return m_si_data; }
 
+bool Preprocessing::IsImuFaulty() const noexcept { return m_sensor_elimination.faulty_imu[0] != 0; }
+
 /**
  * @brief Function implementing the task_preprocessing thread.
  * @param argument: Not used

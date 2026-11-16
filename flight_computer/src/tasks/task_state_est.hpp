@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "control/canard_io.hpp"
 #include "control/kalman_filter.hpp"
 #include "control/orientation_filter.hpp"
 #include "task.hpp"
@@ -21,7 +22,10 @@ class StateEstimation;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern StateEstimation* global_state_estimation;
 
-class StateEstimation final : public Task<StateEstimation, 512> {
+/* Stack size in words (uint32_t) */
+inline constexpr uint32_t kStateEstStackWords = 512;
+
+class StateEstimation final : public Task<StateEstimation, kStateEstStackWords> {
  public:
   explicit StateEstimation(const Preprocessing& task_preprocessing)
       : m_task_preprocessing{task_preprocessing},
@@ -41,6 +45,9 @@ class StateEstimation final : public Task<StateEstimation, 512> {
   /* Initialize State Estimation */
   kalman_filter_t m_filter;
   orientation_filter_t m_orientation_filter;
+
+  /* Canard control, stepped after every Kalman step while the boot layout is not OFF */
+  CanardIo m_canard{};
 };
 
 }  // namespace task

@@ -609,6 +609,7 @@ static void cli_cmd_dump_flight(const char *cmd_name [[maybe_unused]], char *arg
 }
 
 /* flight_parse <flight_idx> [--filter <RECORDER TYPE>...] */
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) one flat if per record type
 static void cli_cmd_parse_flight(const char *cmd_name [[maybe_unused]], char *args) {
   char *ptr = strtok(args, " ");
 
@@ -654,6 +655,9 @@ static void cli_cmd_parse_flight(const char *cmd_name [[maybe_unused]], char *ar
         }
         if (strcmp(ptr, "VOLTAGE_INFO") == 0) {
           filter_mask = static_cast<rec_entry_type_e>(filter_mask | VOLTAGE_INFO);
+        }
+        if (strcmp(ptr, "CONTROL_INFO") == 0) {
+          filter_mask = static_cast<rec_entry_type_e>(filter_mask | CONTROL_INFO);
         }
         ptr = strtok(nullptr, " ");
       }

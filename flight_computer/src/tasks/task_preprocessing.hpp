@@ -18,6 +18,7 @@ class Preprocessing final : public Task<Preprocessing, 512> {
   explicit Preprocessing(const SensorRead& task_sensor_read) : m_task_sensor_read(task_sensor_read) {}
   [[nodiscard]] state_estimation_input_t GetEstimationInput() const noexcept;
   [[nodiscard]] SI_data_t GetSIData() const noexcept;
+  [[nodiscard]] bool IsImuFaulty() const noexcept;
 
  private:
   [[noreturn]] void Run() noexcept override;

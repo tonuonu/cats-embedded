@@ -229,6 +229,9 @@ constexpr uint_fast8_t get_rec_elem_size(const rec_elem_t *const rec_elem) {
     case VOLTAGE_INFO:
       rec_elem_size += sizeof(rec_elem->u.voltage_info);
       break;
+    case CONTROL_INFO:
+      rec_elem_size += sizeof(rec_elem->u.control_info);
+      break;
     default:
       log_raw("Impossible recorder entry type!");
       break;

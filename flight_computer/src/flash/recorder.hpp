@@ -45,6 +45,8 @@ inline constexpr uint32_t REC_ID_MASK = 0x0000000F;
   ERROR_INFO         = 1U << 11U,  // 0x1000
   GNSS_INFO          = 1U << 12U,  // 0x2000
   VOLTAGE_INFO       = 1U << 13U,  // 0x4000
+// Periodic, recorded at the control rate while the canard layout latched at boot is not OFF
+  CONTROL_INFO       = 1U << 14U,  // 0x8000
 };
 // clang-format on
 
@@ -78,6 +80,16 @@ struct error_info_t {
 /* Voltage in mV */
 using voltage_info_t = uint16_t;
 
+/* Canard control step (control/canard_io.cpp). Every field is rounded and saturated to its type. */
+struct control_info_t {
+  int16_t roll_rate_ddps; /* Roll rate, 0.1 deg/s */
+  int16_t tilt_cdeg[2];   /* Tilt components t1, t2, 0.01 deg */
+  int8_t defl_ddeg[4];    /* Commanded deflection per output (ControlOutputs::cmd_deg), 0.1 deg, +-12.7 deg */
+  uint8_t state;          /* canard::EnvState */
+  uint8_t reason;         /* canard::LatchReason */
+};
+static_assert(sizeof(control_info_t) == 12);
+
 union rec_elem_u {
   imu_data_t imu;
   baro_data_t baro;
@@ -89,7 +101,10 @@ union rec_elem_u {
   error_info_t error_info;
   gnss_position_t gnss_info;
   voltage_info_t voltage_info;
+  control_info_t control_info;
 };
+/* CONTROL_INFO must not grow the union: the recorder queue holds REC_QUEUE_SIZE of these. */
+static_assert(sizeof(rec_elem_u) == 12);
 
 struct rec_elem_t {
   timestamp_t ts;

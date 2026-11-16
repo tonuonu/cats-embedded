@@ -650,6 +650,30 @@ void Control_TiltedRail10_ActivatesNormally() {
   TEST_ASSERT_FLOAT_WITHIN(0.3F, -10.0F, out.tilt_deg[0]);
 }
 
+void Control_Inverted_TripsTiltAbort() {
+  // Ruling R24: the envelope's tilt magnitude is acos(up_z). Rolling over 180 deg about t1 must trip an abort set
+  // above 90 deg; hypot of the asin components peaks at 90 deg and would never trip it.
+  CanardParams p = SimParams(Layout::kRoll2);
+  p.mode = FlightMode::kShadow;
+  p.abort_tilt_deg = 150.0F;
+  CanardControl ctl;
+  ctl.Configure(p);
+  PadUpright(ctl);
+  ControlInputs in;
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kCoasting;
+  in.velocity_mps = 100.0F;
+  in.dt_s = kTickS;
+  const double body[3] = {180.0, 0.0, 0.0};
+  BodyToBoard(body, in.gyro_board_dps);
+  ControlOutputs out = ctl.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(out.state));
+  for (int i = 0; i < 100; ++i) out = ctl.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kTilt), static_cast<int>(out.reason));
+}
+
 void Control_NoPadSamples_LatchesImuFaultAtActivation() {
   // Fail safe: without pad samples the frame was never checked, so activation latches IMU_FAULT.
   CanardControl ctl;
@@ -858,6 +882,7 @@ int main() {
   RUN_TEST(Control_StartTest_RejectsBadCommands);
   RUN_TEST(Control_InvertedMount_LatchesImuFaultAtActivation);
   RUN_TEST(Control_TiltedRail10_ActivatesNormally);
+  RUN_TEST(Control_Inverted_TripsTiltAbort);
   RUN_TEST(Control_NoPadSamples_LatchesImuFaultAtActivation);
   RUN_TEST(Sim_Roll_DampsAt100);
   RUN_TEST(Sim_Roll_StableAcrossEffectiveness);

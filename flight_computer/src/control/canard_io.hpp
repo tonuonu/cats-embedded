@@ -36,6 +36,21 @@ bool canard_layout_claims(uint8_t layout, uint8_t servo_index);
  */
 uint16_t canard_claimed_servo_events(uint8_t layout);
 
+/** True when cfg has layout ROLL_2 and a T1/T2 STEP axis: ROLL_2 mixes roll only, so STEP doublets move no canard. */
+bool canard_step_axis_moves_nothing(const canard_config_t& cfg);
+
+/** Snapshot of the canard glue for the CLI (`ctrl_test status`), as of the last control step. */
+struct CanardStatus {
+  bool started = false;       ///< control has started (READY reached with the long-axis calibration)
+  bool output_fault = false;  ///< a claimed output is missing
+  bool calib_fault = false;   ///< control started without the long-axis calibration
+  bool test_running = false;
+  bool frame_ok = false;  ///< frame check (Ruling R24) passes; false before the first pad sample
+  float pad_acc_z_mps2 = 0.0F;
+  canard::EnvState state = canard::EnvState::kDisabled;  ///< the envelope's own state and reason
+  canard::LatchReason reason = canard::LatchReason::kNone;
+};
+
 /** Trim of canard output k (0..3) in cfg, in us, clamped to +-300 us; 0 for k > 3. */
 int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k);
 
@@ -69,8 +84,13 @@ class CanardIo {
   /** True once Step() has called CanardControl::Update (control has started, see above). */
   [[nodiscard]] bool Started() const { return m_started; }
 
-  /** Ends a running pad test (CLI `ctrl_test stop`): the canards slew back to trim. Serialised against Step(). */
-  void CancelTest();
+  /** Ends a running pad test (CLI `ctrl_test stop`): the canards slew back to trim. Serialised against Step().
+   * Returns whether a test was running.
+   */
+  bool CancelTest();
+
+  /** Status for `ctrl_test status`, read under the same mutex as Step(). */
+  CanardStatus Status();
 
  private:
   canard::CanardControl m_control{};

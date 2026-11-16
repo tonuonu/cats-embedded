@@ -79,6 +79,8 @@ bool canard_layout_claims(uint8_t layout, uint8_t servo_index) {
 
 bool canard_outputs_claimed(uint8_t servo_index) { return canard_layout_claims(boot_layout, servo_index); }
 
+static_assert(NUM_EVENTS <= 16U, "canard_claimed_servo_events returns one bit per event in a uint16_t");
+
 uint16_t canard_claimed_servo_events(uint8_t layout) {
   uint16_t events = 0U;
   for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
@@ -111,6 +113,12 @@ int16_t canard_trim_us(const canard_config_t& cfg, uint8_t k) {
     return -kMaxTrimUs;
   }
   return trim;
+}
+
+bool canard_step_axis_moves_nothing(const canard_config_t& cfg) {
+  return cfg.layout == static_cast<uint8_t>(canard::Layout::kRoll2) &&
+         (cfg.step_axis == static_cast<uint8_t>(canard::StepAxis::kT1) ||
+          cfg.step_axis == static_cast<uint8_t>(canard::StepAxis::kT2));
 }
 
 bool canard_reverse(const canard_config_t& cfg, uint8_t k) { return k < kNumOutputs && cfg.reverse[k] != 0U; }
@@ -162,7 +170,9 @@ void CanardIo::Init() {
     }
   }
 
-  if (p.layout == canard::Layout::kRoll2 && p.step_axis != canard::StepAxis::kRoll) {
+  // Debug builds only (log_warn compiles out without CATS_DEV); release users see these in `ctrl_test status` and when
+  // the CLI starts.
+  if (p.layout == canard::Layout::kRoll2 && canard_step_axis_moves_nothing(cfg)) {
     log_warn("Canard: ctrl_step_axis %s with ROLL_2 (roll only): STEP doublets move no canard",
              ctrl_axis_map[static_cast<uint8_t>(p.step_axis)]);
   }
@@ -247,10 +257,28 @@ bool CanardIo::StartTest(const canard::TestCommand& cmd) {
   return accepted;
 }
 
-void CanardIo::CancelTest() {
+bool CanardIo::CancelTest() {
   if (m_mutex == nullptr || osMutexAcquire(m_mutex, osWaitForever) != osOK) {
-    return;
+    return false;
   }
-  m_control.CancelTest();
+  const bool was_running = m_control.CancelTest();
   osMutexRelease(m_mutex);
+  return was_running;
+}
+
+CanardStatus CanardIo::Status() {
+  CanardStatus st;
+  if (m_mutex == nullptr || osMutexAcquire(m_mutex, osWaitForever) != osOK) {
+    return st;
+  }
+  st.started = m_started;
+  st.output_fault = m_output_fault;
+  st.calib_fault = m_calib_fault;
+  st.test_running = m_control.TestRunning();
+  st.frame_ok = m_control.FrameCheckOk();
+  st.pad_acc_z_mps2 = m_control.PadAccZMps2();
+  st.state = m_control.State();
+  st.reason = m_control.Reason();
+  osMutexRelease(m_mutex);
+  return st;
 }

@@ -49,6 +49,7 @@ struct skip_counter_t {
   uint8_t flight_info;
   uint8_t orientation;
   uint8_t filtered_data;
+  uint8_t control_info;
 };
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -156,6 +157,12 @@ void record(timestamp_t ts, rec_entry_type_e rec_type_with_id, const void *const
         break;
       case VOLTAGE_INFO:
         e.u.voltage_info = *(static_cast<const voltage_info_t *>(rec_value));
+        break;
+      case CONTROL_INFO:
+        if (should_skip(&skip_counter.control_info, 1)) {
+          return;
+        }
+        e.u.control_info = *(static_cast<const control_info_t *>(rec_value));
         break;
       default:
         log_fatal("Impossible recorder entry type %lu!", pure_rec_type);

@@ -10,6 +10,8 @@ namespace task {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 StateEstimation* global_state_estimation = nullptr;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+CanardIo* global_canard_io = nullptr;
 
 void StateEstimation::GetEstimationInputData() {
   /* After apogee we assume that the linear acceleration is zero. This assumption is true if the parachute has been
@@ -53,6 +55,14 @@ estimation_output_t StateEstimation::GetEstimationOutput() const noexcept {
   init_orientation_filter(&m_orientation_filter);
   reset_orientation_filter(&m_orientation_filter);
 
+  const bool canard_on = canard_boot_layout() != static_cast<uint8_t>(canard::Layout::kOff);
+  if (canard_on) {
+    m_canard.Init();
+    global_canard_io = &m_canard;
+  }
+  /* Stack check for the canard control step: the high-water mark is logged once, 10 s after the first control step */
+  uint32_t stack_check_countdown = uint32_t{10U} * CONTROL_SAMPLING_FREQ;
+
   uint32_t tick_count = osKernelGetTickCount();
   constexpr uint32_t tick_update = sysGetTickFreq() / CONTROL_SAMPLING_FREQ;
   while (true) {
@@ -77,6 +87,15 @@ estimation_output_t StateEstimation::GetEstimationOutput() const noexcept {
 
     /* Do a Kalman Step */
     kalman_step(&m_filter, m_fsm_enum);
+
+    if (canard_on) {
+      m_canard.Step(tick_count, m_fsm_enum, m_task_preprocessing.GetSIData(), m_filter.x_bar_data[1],
+                    m_filter.x_bar_data[0], m_task_preprocessing.IsImuFaulty());
+      if (m_canard.Started() && stack_check_countdown > 0U && --stack_check_countdown == 0U) {
+        log_info("StateEstimation stack: %lu of %lu words never used", uxTaskGetStackHighWaterMark(nullptr),
+                 kStateEstStackWords);
+      }
+    }
 
     orientation_info_t orientation_info{};
     /*

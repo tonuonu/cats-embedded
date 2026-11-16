@@ -13,6 +13,7 @@ DMA_HandleTypeDef hdma_adc1;
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
@@ -198,6 +199,44 @@ static void MX_SPI2_Init() {
   if (HAL_SPI_Init(&hspi2) != HAL_OK) {
     Error_Handler();
   }
+}
+
+/**
+ * @brief TIM2 Initialization Function, only used when PA2/PA3 are servo outputs
+ * @param None
+ * @retval None
+ */
+static void MX_TIM2_Init() {
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 95;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 19999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK) {
+    Error_Handler();
+  }
+
+  // PA2/PA3 to AF1 (TIM2_CH3/CH4)
+  HAL_TIM_MspPostInit(&htim2);
 }
 
 /**
@@ -430,4 +469,14 @@ bool target_init() {
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   return static_cast<bool>(HAL_GPIO_ReadPin(USB_DET_GPIO_Port, USB_DET_Pin));
+}
+
+void target_switch_uart2_to_servo_outputs() {
+  // The UART MSP de-init releases PA2/PA3, gates the USART2 clock and disables USART2_IRQn, so the IRQ handler
+  // cannot run on the de-initialised handle afterwards.
+  if (HAL_UART_DeInit(&huart2) != HAL_OK) {
+    Error_Handler();
+  }
+  // Initialises TIM2 and configures PA2/PA3 as AF1 through HAL_TIM_MspPostInit.
+  MX_TIM2_Init();
 }

@@ -52,6 +52,7 @@ extern SPI_HandleTypeDef hspi1;
 extern SPI_HandleTypeDef hspi2;
 
 /* Timer config */
+extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim4;
 
@@ -78,6 +79,11 @@ extern UART_HandleTypeDef huart2;
 #define SERVO_TIMER_HANDLE    htim3
 #define SERVO_TIMER_CHANNEL_1 TIM_CHANNEL_1
 #define SERVO_TIMER_CHANNEL_2 TIM_CHANNEL_2
+
+/* Canard outputs 3 and 4 on the UART2 pins PA2/PA3, FULL_4 layout only */
+#define AUX_SERVO_TIMER_HANDLE    htim2
+#define AUX_SERVO_TIMER_CHANNEL_3 TIM_CHANNEL_3
+#define AUX_SERVO_TIMER_CHANNEL_4 TIM_CHANNEL_4
 
 #define BUZZER_TIMER_HANDLE  htim4
 #define BUZZER_TIMER_CHANNEL TIM_CHANNEL_1
@@ -121,6 +127,8 @@ void MX_USB_OTG_FS_PCD_Init(void);
 void Error_Handler(void);
 void target_pre_init();
 bool target_init();
+/** De-initialise USART2 and drive its pins PA2/PA3 from TIM2_CH3/CH4 (AF1) instead. Call once, after target_init(). */
+void target_switch_uart2_to_servo_outputs();
 #ifdef __cplusplus
 }
 #endif

@@ -5,6 +5,7 @@
 #include "config/globals.hpp"
 
 #include "comm/fifo.hpp"
+#include "drivers/servo_output.hpp"
 #include "drivers/spi.hpp"
 #include "target.hpp"
 
@@ -14,6 +15,7 @@
 // We need these for now, but will eventually get rid of them by replacing the actions with a class
 driver::Servo* global_servo1 = nullptr;
 driver::Servo* global_servo2 = nullptr;
+driver::ServoOutput* global_canard_outputs[4] = {};
 
 /** State Estimation **/
 

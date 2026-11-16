@@ -139,6 +139,32 @@ struct control_settings_t {
   uint16_t main_altitude;          // m
 };
 
+/* Canard control settings. Gains are stored x1000, us_per_deg_deci x10, angles in the named units. */
+struct canard_config_t {
+  uint8_t layout;       // canard::Layout
+  uint8_t flight_mode;  // canard::FlightMode
+  uint16_t v_enable_mps;
+  uint16_t v_ref_mps;
+  uint16_t tilt_v_min_mps;
+  uint8_t max_defl_ddeg;  // 0.1 deg
+  uint8_t abort_tilt_deg;
+  uint16_t roll_kp_milli;
+  uint16_t roll_ki_milli;
+  uint16_t tilt_kp_milli;
+  uint16_t tilt_kd_milli;
+  uint8_t step_axis;  // canard::StepAxis
+  uint8_t step_defl_ddeg;
+  uint16_t step_ms;
+  uint16_t step_delay_ms;
+  uint8_t step_count;
+  uint16_t step_period_ms;
+  uint16_t us_per_deg_deci;  // x10
+  uint16_t center_us;
+  uint16_t servo_hz;
+  int16_t trim_us[4];
+  uint8_t reverse[4];
+};
+
 struct config_timer_t {
   uint32_t duration;
   /* Event on which the timer starts. */

@@ -17,6 +17,7 @@ This repository contains the embedded software for the CATS Vega flight computer
 * Telemetry with a range of at least 10 km
 * GNSS logging and transmission to the ground station
 * Accelerometric liftoff detection
+* Optional canard roll control (see [docs/CANARD_CONTROL.md](docs/CANARD_CONTROL.md))
 * Fully open source
 * Configuration is done over our application, no need to work with a CLI
 * Explore rocket flights recorded with CATS flight computers at [CATS Flights](https://catsystems.io/flights).

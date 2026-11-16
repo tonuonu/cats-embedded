@@ -287,6 +287,16 @@ void parse_recording(uint16_t flight_num, rec_entry_type_e filter_mask) {
             log_raw("%lu|VOLTAGE_INFO|%.3f", rec_elem.ts, static_cast<double>(rec_elem.u.voltage_info) / 1000);
           }
         } break;
+        case CONTROL_INFO: {
+          const size_t elem_sz = sizeof(rec_elem.u.control_info);
+          lfs_file_read(&lfs, &curr_file, reinterpret_cast<uint8_t *>(&rec_elem.u.imu), elem_sz);
+          if ((rec_type_without_id & filter_mask) > 0) {
+            const control_info_t &info = rec_elem.u.control_info;
+            log_raw("%lu|CONTROL_INFO|%d|%d|%d|%d|%d|%d|%d|%u|%u", rec_elem.ts, info.roll_rate_ddps, info.tilt_cdeg[0],
+                    info.tilt_cdeg[1], info.defl_ddeg[0], info.defl_ddeg[1], info.defl_ddeg[2], info.defl_ddeg[3],
+                    info.state, info.reason);
+          }
+        } break;
         default:
           log_raw("Impossible recorder entry type: %lu!", rec_type_without_id);
           break;

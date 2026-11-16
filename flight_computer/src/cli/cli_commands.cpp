@@ -13,8 +13,14 @@
 #endif
 
 #include "cli/cli.hpp"
+#include "cli/settings.hpp"
 #include "config/cats_config.hpp"
 #include "config/globals.hpp"
+#include "control/canard/mixer.hpp"
+#include "control/canard/status_text.hpp"
+#include "control/canard/test_args.hpp"
+#include "control/canard_io.hpp"
+#include "drivers/servo_output.hpp"
 #include "drivers/w25q.hpp"
 #include "flash/lfs_custom.hpp"
 #include "flash/reader.hpp"
@@ -47,6 +53,7 @@ static void cli_cmd_status(const char *cmd_name, char *args);
 static void cli_cmd_version(const char *cmd_name, char *args);
 
 static void cli_cmd_log_enable(const char *cmd_name, char *args);
+static void cli_cmd_ctrl_test(const char *cmd_name, char *args);
 
 static void cli_cmd_ls(const char *cmd_name, char *args);
 static void cli_cmd_cd(const char *cmd_name, char *args);
@@ -73,6 +80,7 @@ const clicmd_t cmd_table[] = {
     CLI_COMMAND_DEF("bl", "reset into bootloader", nullptr, cli_cmd_bl),
     CLI_COMMAND_DEF("cd", "change current working directory", nullptr, cli_cmd_cd),
     CLI_COMMAND_DEF("config", "print the flight config", nullptr, cli_cmd_config),
+    CLI_COMMAND_DEF("ctrl_test", "canard bench test", "sweep | live <speed> [s] | stop | status", cli_cmd_ctrl_test),
     CLI_COMMAND_DEF("defaults", "reset to defaults and reboot", nullptr, cli_cmd_defaults),
     CLI_COMMAND_DEF("dump", "Dump configuration", nullptr, cli_cmd_dump),
     CLI_COMMAND_DEF("flash_erase", "erase the flash", nullptr, cli_cmd_erase_flash),
@@ -437,6 +445,118 @@ static void cli_cmd_version(const char *cmd_name [[maybe_unused]], char *args [[
 
 static void cli_cmd_log_enable(const char *cmd_name [[maybe_unused]], char *args [[maybe_unused]]) { log_enable(); }
 
+static_assert(static_cast<size_t>(canard::EnvState::kNeutralLatched) + 1U == ctrl_state_map.size());
+static_assert(static_cast<size_t>(canard::LatchReason::kSim) + 1U == ctrl_reason_map.size());
+
+/// ctrl_test status: what the canard control would do now. Release-visible, unlike the boot log.
+static void print_canard_status() {
+  const canard_config_t &cfg = canard_boot_config();
+  const uint8_t layout = canard_boot_layout();
+  const uint8_t mode = cfg.flight_mode < ctrl_mode_map.size() ? cfg.flight_mode : 0U;
+  cli_print_linefeed();
+  cli_printf("layout %s, mode %s (latched at boot)", ctrl_layout_map[layout], ctrl_mode_map[mode]);
+  if (task::global_canard_io == nullptr) {
+    return;
+  }
+  const CanardStatus st = task::global_canard_io->Status();
+  cli_print_linefeed();
+  if (!st.started) {
+    cli_print("control: not started (waits for READY and the IMU calibration)");
+  } else if (st.calib_fault) {
+    cli_print("control: started off the pad without the IMU calibration (IMU fault latch)");
+  } else {
+    cli_print("control: started");
+  }
+  const auto name = [](const auto &map, auto value) {
+    const auto i = static_cast<size_t>(value);
+    return i < map.size() ? map[i] : "?";
+  };
+  cli_print_linefeed();
+  cli_printf("envelope: %s, envelope reason %s", name(ctrl_state_map, st.state), name(ctrl_reason_map, st.reason));
+  // CONTROL_INFO reports IMU_FAULT while NEUTRAL_PAD with a failed frame check; the note names the actual cause.
+  canard::LoggedReasonView view;
+  view.started = st.started;
+  view.pad_sample_seen = st.pad_sample_seen;
+  view.frame_ok = st.frame_ok;
+  view.on_pad = st.on_pad;
+  view.envelope_reason = st.reason;
+  view.logged_reason = st.logged_reason;
+  cli_print_linefeed();
+  cli_printf("logged reason (CONTROL_INFO): %s%s", st.started ? name(ctrl_reason_map, st.logged_reason) : "-",
+             canard::LoggedReasonNote(view));
+  cli_print_linefeed();
+  const auto acc_z_g = static_cast<double>(st.pad_acc_z_mps2 / 9.81F);
+  if (!st.started) {
+    cli_print("frame check: no pad samples yet");
+  } else if (!st.pad_sample_seen) {
+    cli_print(st.calib_fault ? "frame check: not run (no pad samples: control started without the IMU calibration)"
+                             : "frame check: not run (no pad samples: control started off the pad)");
+  } else if (st.frame_ok) {
+    cli_printf("frame check: OK (body z %+.2f g)", acc_z_g);
+  } else {
+    cli_printf("frame check: FAIL (body z %+.2f g, needs > +0.80 g): long-axis sign wrong? Do not arm", acc_z_g);
+  }
+  cli_print_linefeed();
+  cli_printf("test: %s", st.test_running ? "running" : "none");
+  for (uint8_t k = 0U; k < st.n_outputs; ++k) {
+    cli_print_linefeed();
+    cli_printf("output %u: %s", k + 1U, (st.missing_outputs & (1U << k)) != 0U ? "MISSING (IMU fault latch)" : "ok");
+  }
+  cli_print_canard_boot_warnings();
+}
+
+/// ctrl_test sweep | live <speed_mps> [seconds=20, at most 120] | stop | status. Bench only: CanardIo accepts a test
+/// while the FSM is READY. A test ends on its timeout, on `ctrl_test stop` or on any FSM change.
+static void cli_cmd_ctrl_test(const char *cmd_name [[maybe_unused]], char *args) {
+  constexpr const char *kUsage = "usage: ctrl_test sweep | live <speed> [s] | stop | status";
+  if (args != nullptr && strcmp(args, "status") == 0) {
+    print_canard_status();
+    return;
+  }
+  if (args != nullptr && strcmp(args, "stop") == 0) {
+    if (task::global_canard_io == nullptr) {
+      cli_print_line("ctrl_test: layout is OFF");
+    } else {
+      cli_print_line(task::global_canard_io->CancelTest() ? "ctrl_test: stopped" : "ctrl_test: no test running");
+    }
+    return;
+  }
+  canard::TestCommand cmd{};
+  bool capped = false;
+  if (args != nullptr && strcmp(args, "sweep") == 0) {
+    // every output goes +max, -max, back to trim (1 s each, 3 s per output), plus 1 s margin
+    const auto n = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
+    cmd = {canard::TestCommand::Kind::kSweep, 0.0F, static_cast<float>(3U * n) + 1.0F};
+  } else if (args != nullptr && strncmp(args, "live ", 5) == 0) {
+    const canard::LiveTestArgs live = canard::ParseLiveTestArgs(args + 5);
+    if (live.error == canard::LiveTestArgs::Error::kSpeedRange) {
+      cli_print_line("ctrl_test: speed out of range");
+      return;
+    }
+    if (live.error == canard::LiveTestArgs::Error::kDurationRange) {
+      cli_print_line("ctrl_test: duration out of range");
+      return;
+    }
+    if (!live.ok) {
+      cli_print_line(kUsage);
+      return;
+    }
+    capped = live.capped;
+    cmd = {canard::TestCommand::Kind::kLive, live.speed_mps, live.duration_s};
+  } else {
+    cli_print_line(kUsage);
+    return;
+  }
+  if (task::global_canard_io == nullptr) {
+    cli_print_line("ctrl_test: layout is OFF");
+  } else if (!task::global_canard_io->StartTest(cmd)) {
+    cli_print_line("ctrl_test: only on the pad (READY)");
+  } else if (capped) {
+    // Only once the test runs, so the note never hides a refusal.
+    cli_print_linef("ctrl_test: duration capped to %.0f s", static_cast<double>(canard::kMaxTestS));
+  }
+}
+
 static void cli_cmd_ls(const char *cmd_name [[maybe_unused]], char *args) {
   if (args == nullptr) {
     lfs_ls(cwd);
@@ -609,6 +729,7 @@ static void cli_cmd_dump_flight(const char *cmd_name [[maybe_unused]], char *arg
 }
 
 /* flight_parse <flight_idx> [--filter <RECORDER TYPE>...] */
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) one flat if per record type
 static void cli_cmd_parse_flight(const char *cmd_name [[maybe_unused]], char *args) {
   char *ptr = strtok(args, " ");
 
@@ -654,6 +775,9 @@ static void cli_cmd_parse_flight(const char *cmd_name [[maybe_unused]], char *ar
         }
         if (strcmp(ptr, "VOLTAGE_INFO") == 0) {
           filter_mask = static_cast<rec_entry_type_e>(filter_mask | VOLTAGE_INFO);
+        }
+        if (strcmp(ptr, "CONTROL_INFO") == 0) {
+          filter_mask = static_cast<rec_entry_type_e>(filter_mask | CONTROL_INFO);
         }
         ptr = strtok(nullptr, " ");
       }

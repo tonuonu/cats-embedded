@@ -16,7 +16,16 @@
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define ARRAYLEN(x) (sizeof(x) / sizeof((x)[0]))
 
-enum lookup_table_index_e { TABLE_EVENTS = 0, TABLE_ACTIONS, TABLE_POWER, TABLE_SPEEDS, TABLE_BATTERY };
+enum lookup_table_index_e {
+  TABLE_EVENTS = 0,
+  TABLE_ACTIONS,
+  TABLE_POWER,
+  TABLE_SPEEDS,
+  TABLE_BATTERY,
+  TABLE_CTRL_LAYOUT,
+  TABLE_CTRL_MODE,
+  TABLE_CTRL_AXIS
+};
 
 inline constexpr uint8_t VALUE_TYPE_OFFSET = 0;
 inline constexpr uint8_t VALUE_SECTION_OFFSET = 3;
@@ -90,8 +99,8 @@ struct cli_value_t {
   callback_f cb;
 } __attribute__((packed));
 
-inline constexpr std::array<EnumToStrMap, 5> lookup_tables{event_map, action_map, on_off_map, recorder_speed_map,
-                                                           battery_map};
+inline constexpr std::array<EnumToStrMap, 8> lookup_tables{
+    event_map, action_map, on_off_map, recorder_speed_map, battery_map, ctrl_layout_map, ctrl_mode_map, ctrl_axis_map};
 
 extern const uint16_t value_table_entry_count;
 
@@ -100,3 +109,8 @@ extern const cli_value_t value_table[];
 void *get_cats_config_member_ptr(const cats_config_t *cfg, const cli_value_t *var);
 
 void print_cats_config(const char *cmd_name, const cats_config_t *cfg, bool print_limits);
+
+/* Canard warnings for the running (boot) layout: event servo actions it ignores and a STEP axis it cannot move. The
+ * firmware's boot log only shows them in CATS_DEV builds; the CLI prints them when it starts and in ctrl_test status.
+ */
+void cli_print_canard_boot_warnings();

@@ -630,6 +630,71 @@ void Control_StartTest_RejectsBadCommands() {
   TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{Kind::kLive, 100.0F, 5.0F}));
 }
 
+void Control_StartTest_AcceptsFinitePositiveDurations() {
+  // The facade itself does not cap the duration (the CLI caps at 120 s): any finite positive value is accepted.
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  PadUpright(ctl, 0.1);
+  for (const float duration : {0.01F, 5.0F, 120.0F, 1000.0F}) {
+    TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{TestCommand::Kind::kSweep, 0.0F, duration}));
+    TEST_ASSERT_TRUE(ctl.CancelTest());
+    TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{TestCommand::Kind::kLive, 100.0F, duration}));
+    TEST_ASSERT_TRUE(ctl.CancelTest());
+  }
+}
+
+void Control_CancelTest_ReportsWhetherATestRan() {
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  PadUpright(ctl, 0.1);
+  TEST_ASSERT_FALSE(ctl.TestRunning());
+  TEST_ASSERT_FALSE(ctl.CancelTest());  // nothing running
+  TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{TestCommand::Kind::kSweep, 0.0F, 1.0F}));
+  TEST_ASSERT_TRUE(ctl.TestRunning());
+  PadUpright(ctl, 0.5);
+  TEST_ASSERT_TRUE(ctl.TestRunning());
+  TEST_ASSERT_TRUE(ctl.CancelTest());
+  TEST_ASSERT_FALSE(ctl.TestRunning());
+  TEST_ASSERT_FALSE(ctl.CancelTest());
+  // A test that timed out is not running any more either.
+  TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{TestCommand::Kind::kSweep, 0.0F, 0.2F}));
+  PadUpright(ctl, 0.5);
+  TEST_ASSERT_FALSE(ctl.TestRunning());
+  TEST_ASSERT_FALSE(ctl.CancelTest());
+}
+
+void Control_FrameCheck_VisibleOnPad() {
+  // ctrl_test status and CONTROL_INFO show a failed frame check on the pad: the state stays NEUTRAL_PAD (the
+  // envelope is unchanged) but the reported reason is IMU_FAULT.
+  CanardControl ok;
+  ok.Configure(SimParams(Layout::kRoll2));
+  TEST_ASSERT_FALSE(ok.FrameCheckOk());  // no pad sample yet
+  PadUpright(ok, 2.0);
+  TEST_ASSERT_TRUE(ok.FrameCheckOk());
+  TEST_ASSERT_FLOAT_WITHIN(0.01F, static_cast<float>(kGravity), ok.PadAccZMps2());
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(ok.State()));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(ok.Reason()));
+
+  CanardControl bad;
+  bad.Configure(SimParams(Layout::kRoll2));
+  ControlInputs in;
+  const double up[3] = {0.0, 0.0, kGravity};
+  BodyToBoard(up, in.acc_board_mps2);
+  in.long_axis = kLongAxis;
+  in.long_sign = -kLongSign;  // wrong sign: body z reads -1 g
+  in.phase = Phase::kReady;
+  in.dt_s = kTickS;
+  ControlOutputs out;
+  for (int i = 0; i < 200; ++i) out = bad.Update(in);
+  TEST_ASSERT_FALSE(bad.FrameCheckOk());
+  TEST_ASSERT_FLOAT_WITHIN(0.01F, -static_cast<float>(kGravity), bad.PadAccZMps2());
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
+  // The envelope itself has not latched: its own reason is still NONE.
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralPad), static_cast<int>(bad.State()));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kNone), static_cast<int>(bad.Reason()));
+}
+
 void Control_InvertedMount_LatchesImuFaultAtActivation() {
   // Ruling R24: long_sign wrong (the board reads -1 g on body z at rest). The pad stays NEUTRAL_PAD; activation
   // latches IMU_FAULT instead of flying an upside-down frame.
@@ -880,6 +945,9 @@ int main() {
   RUN_TEST(Control_TestSweep_StepsEachOutput);
   RUN_TEST(Control_TestLive_UsesForcedVelocity);
   RUN_TEST(Control_StartTest_RejectsBadCommands);
+  RUN_TEST(Control_StartTest_AcceptsFinitePositiveDurations);
+  RUN_TEST(Control_CancelTest_ReportsWhetherATestRan);
+  RUN_TEST(Control_FrameCheck_VisibleOnPad);
   RUN_TEST(Control_InvertedMount_LatchesImuFaultAtActivation);
   RUN_TEST(Control_TiltedRail10_ActivatesNormally);
   RUN_TEST(Control_Inverted_TripsTiltAbort);

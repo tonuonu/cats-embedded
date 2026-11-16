@@ -45,7 +45,18 @@ class CanardControl {
   /// layout not kOff), the kind is not kNone, the duration is finite and > 0 and, for kLive, the forced speed is
   /// finite.
   bool StartTest(const TestCommand& cmd);
-  void CancelTest();
+  /// Ends a running pad test; returns whether one was running (as of the last Update).
+  bool CancelTest();
+
+  /// Status for the CLI (`ctrl_test status`), as of the last Update.
+  [[nodiscard]] bool TestRunning() const { return m_test_running; }
+  /// Frame check (Ruling R24): true once a pad sample was seen and the filtered body z specific force is above 0.8 g.
+  [[nodiscard]] bool FrameCheckOk() const;
+  /// The filtered body z specific force on the pad in m/s^2 (frozen in flight).
+  [[nodiscard]] float PadAccZMps2() const { return m_pad_acc_z_mps2; }
+  /// The envelope's own state and latch reason (ControlOutputs::reason may also flag a failed frame check on the pad).
+  [[nodiscard]] EnvState State() const { return m_last_state; }
+  [[nodiscard]] LatchReason Reason() const { return m_last_reason; }
 
  private:
   void TestCommandDeg(float dt_s, const float controller_deg[4], float out_deg[4]);
@@ -60,6 +71,7 @@ class CanardControl {
   float m_test_t_s = 0.0F;
   Phase m_last_phase = Phase::kCalibrating;
   EnvState m_last_state = EnvState::kDisabled;
+  LatchReason m_last_reason = LatchReason::kNone;
   float m_defl_deg[4] = {};
   float m_roll_rate_dps = 0.0F;
   float m_tilt_deg[2] = {};

@@ -52,6 +52,7 @@ void CanardControl::Reset() {
   m_test_t_s = 0.0F;
   m_last_phase = Phase::kCalibrating;
   m_last_state = (m_params.layout == Layout::kOff) ? EnvState::kDisabled : EnvState::kNeutralPad;
+  m_last_reason = LatchReason::kNone;
   for (float& d : m_defl_deg) {
     d = 0.0F;
   }
@@ -77,10 +78,14 @@ bool CanardControl::StartTest(const TestCommand& cmd) {
   return true;
 }
 
-void CanardControl::CancelTest() {
+bool CanardControl::CancelTest() {
+  const bool was_running = m_test_running;
   m_envelope.CancelTest();
   m_test_running = false;
+  return was_running;
 }
+
+bool CanardControl::FrameCheckOk() const { return m_pad_acc_seen && m_pad_acc_z_mps2 > kFrameCheckMinMps2; }
 
 void CanardControl::TestCommandDeg(float dt_s, const float controller_deg[4], float out_deg[4]) {
   for (int k = 0; k < 4; ++k) {
@@ -142,6 +147,7 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
     out.tilt_deg[1] = m_tilt_deg[1];
     m_last_phase = in.phase;
     m_last_state = d.state;
+    m_last_reason = d.reason;
     return out;
   }
 
@@ -196,7 +202,7 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
     max_abs_gyro = std::fmax(max_abs_gyro, std::fabs(g));
   }
   // A failed frame check counts as an IMU fault: ignored on the pad, it latches kImuFault in the activating Update.
-  const bool frame_ok = m_pad_acc_seen && m_pad_acc_z_mps2 > kFrameCheckMinMps2;
+  const bool frame_ok = FrameCheckOk();
   env.imu_faulty = in.imu_faulty || !frame_ok;
   env.v_mps = in.velocity_mps;
   env.roll_rate_dps = m_roll_rate_dps;
@@ -244,12 +250,15 @@ ControlOutputs CanardControl::Update(const ControlInputs& in) {
     out.cmd_deg[k] = cmd[k];
   }
   out.state = d.state;
-  out.reason = d.reason;
+  // Visible on the pad (CONTROL_INFO, ctrl_test status): a failed frame check reports IMU_FAULT while the envelope
+  // still waits in NEUTRAL_PAD. It latches only at activation; the envelope is not changed by this.
+  out.reason = (d.state == EnvState::kNeutralPad && !frame_ok) ? LatchReason::kImuFault : d.reason;
   out.roll_rate_dps = m_roll_rate_dps;
   out.tilt_deg[0] = m_tilt_deg[0];
   out.tilt_deg[1] = m_tilt_deg[1];
   m_last_phase = in.phase;
   m_last_state = d.state;
+  m_last_reason = d.reason;
   return out;
 }
 

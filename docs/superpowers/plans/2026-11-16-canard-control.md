@@ -35,7 +35,7 @@
 - **Commits:** explicit `git add` paths only.
 - **Units inside the module:** degrees for deflection and tilt, °/s for rates, m/s, m, s. Conversion from stored integer settings happens only in `canard_io.cpp`.
 - **Spec values to copy exactly (defaults):**
-  - **Speeds:** `ctrl_v_enable` 30 m/s, `ctrl_v_ref` 100 m/s, `ctrl_tilt_v_min` 70 m/s.
+  - **Speeds:** `ctrl_v_enable` 15 m/s, `ctrl_v_ref` 100 m/s, `ctrl_tilt_v_min` 70 m/s.
   - **Deflection and tilt limits:** `ctrl_max_defl` 8°, `ctrl_abort_tilt` 30°.
   - **Step test:** step axis `ROLL`, 3°, 300 ms per side, delay 300 ms, count 3, period 2000 ms; leading sign + − +.
   - **Servo signal:** `ctrl_center_us` 1500, `ctrl_servo_hz` 50.
@@ -365,6 +365,7 @@ Rules from the spec, which the tests pin:
   - `Sim_Full4_TiltAt100`: 5° tilt at 100 m/s → below 2° within 2 s.
   - `Sim_Full4_TiltAt70_NoGrowth`: 5° at 70 m/s → never above 5.1°.
   - `Sim_StuckOutput_Stable`: one output forced to +8° for 5 s at 138 m/s, with the controller output ignored on that channel → bounded tilt (< `abort_tilt`) and bounded roll.
+  - `Sim_Roll_LowSpeed`: H-class case, 120 °/s initial at 25 m/s with `v_enable` 15 → |p| < 20 °/s within 3 s, no oscillation growth; also stable (no limit cycle above 5 °/s) at a constant 15 m/s.
   - `Sim_MassSweep`: repeat `Sim_Roll_DampsAt100` with inertia −15 % → passes.
 - [ ] **Step 2:** Run `pio test -e native -f test_canard_sim`. Expected: FAIL (no `CanardControl`).
 - [ ] **Step 3:** Implement `CanardControl` per the Interfaces and the order above.
@@ -416,7 +417,7 @@ Rules from the spec, which the tests pin:
   - `int16_t trim_us[4]; uint8_t reverse[4];`
 - `cats_config_t` gains `canard_config_t canard{};`, appended before `buzzer_volume`.
 - Defaults:
-  - layout 0, mode 0 (SHADOW), v_enable 30, v_ref 100, tilt_v_min 70, max_defl 80, abort_tilt 30;
+  - layout 0, mode 0 (SHADOW), v_enable 15, v_ref 100, tilt_v_min 70, max_defl 80, abort_tilt 30;
   - gains from Task 7 ×1000;
   - step axis 0, step 30, step_ms 300, delay 300, count 3, period 2000;
   - us_per_deg 100 (10 µs/°), center 1500, servo_hz 50, trims 0, reverse 0.

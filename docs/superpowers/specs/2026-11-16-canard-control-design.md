@@ -187,6 +187,10 @@ sense, which is roll.
   `ctrl_v_enable`.
 - **Effect:** canard authority scales with q, so this keeps loop gain roughly constant across the
   flight.
+- **Default `ctrl_v_enable` 15 m/s (owner, 2026-11-16):** the owner's H motors peak at only
+  30–74 m/s. At 15 m/s the canards still give about 45 °/s of steady roll at 11° (canard-only
+  estimate), well above the Peregrine's measured 5–17 °/s. A 30 m/s threshold would leave the
+  H115DM (30.5 m/s peak) with no control window. Tilt control stays gated by `ctrl_tilt_v_min`.
 
 ### Control laws
 
@@ -282,7 +286,7 @@ board's saved config to defaults once.
 | Name | Meaning | Default |
 |---|---|---|
 | `ctrl_layout` | `OFF` / `ROLL_2` / `FULL_4` | `OFF` |
-| `ctrl_v_enable` | m/s, activation and exit speed | 30 |
+| `ctrl_v_enable` | m/s, activation and exit speed | 15 |
 | `ctrl_v_ref` | m/s, gain reference speed | 100 |
 | `ctrl_max_defl` | deg, command clamp | 8 |
 | `ctrl_flight_mode` | `SHADOW` / `STEP` / `CLOSED` | `SHADOW` |

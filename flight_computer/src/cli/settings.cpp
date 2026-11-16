@@ -94,9 +94,11 @@ static void ev_servo_check(const cli_value_t *var) {
     }
   } else if ((canard_running_claimed_servo_events() & bit) != 0U) {
     cli_print_linefeed();
+    // The configured layout does not claim the outputs here (else the branch above), so only the running state is
+    // described: whether the action exists after reboot depends on what is saved.
     cli_printf(
-        "note: running firmware: event %s has a SERVO_ONE/SERVO_TWO action (boot-time event map) that the boot "
-        "ctrl_layout %s ignores until reboot",
+        "note: the running firmware ignores event %s's SERVO_ONE/SERVO_TWO action (boot-time event map; the "
+        "boot ctrl_layout %s owns SERVO1/SERVO2); the configured ctrl_layout does not claim them after reboot",
         event_map[index], ctrl_layout_map[running]);
   }
 }

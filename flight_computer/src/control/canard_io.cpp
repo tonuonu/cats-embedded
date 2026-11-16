@@ -294,6 +294,7 @@ CanardStatus CanardIo::Status() {
   st.n_outputs = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
   st.missing_outputs = m_missing_outputs;
   st.pad_sample_seen = m_control.PadSampleSeen();
+  st.on_pad = m_control.OnPad();
   st.logged_reason = m_control.LoggedReason();
   st.calib_fault = m_calib_fault;
   st.test_running = m_control.TestRunning();

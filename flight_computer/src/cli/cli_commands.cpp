@@ -17,6 +17,7 @@
 #include "config/cats_config.hpp"
 #include "config/globals.hpp"
 #include "control/canard/mixer.hpp"
+#include "control/canard/status_text.hpp"
 #include "control/canard/test_args.hpp"
 #include "control/canard_io.hpp"
 #include "drivers/servo_output.hpp"
@@ -472,10 +473,17 @@ static void print_canard_status() {
   };
   cli_print_linefeed();
   cli_printf("envelope: %s, envelope reason %s", name(ctrl_state_map, st.state), name(ctrl_reason_map, st.reason));
-  // CONTROL_INFO reports IMU_FAULT on the pad while the frame check fails; the envelope only latches at activation.
+  // CONTROL_INFO reports IMU_FAULT while NEUTRAL_PAD with a failed frame check; the note names the actual cause.
+  canard::LoggedReasonView view;
+  view.started = st.started;
+  view.pad_sample_seen = st.pad_sample_seen;
+  view.frame_ok = st.frame_ok;
+  view.on_pad = st.on_pad;
+  view.envelope_reason = st.reason;
+  view.logged_reason = st.logged_reason;
   cli_print_linefeed();
-  cli_printf("logged reason (CONTROL_INFO): %s%s", name(ctrl_reason_map, st.logged_reason),
-             st.logged_reason != st.reason ? " (frame check fails; latches at activation)" : "");
+  cli_printf("logged reason (CONTROL_INFO): %s%s", st.started ? name(ctrl_reason_map, st.logged_reason) : "-",
+             canard::LoggedReasonNote(view));
   cli_print_linefeed();
   const auto acc_z_g = static_cast<double>(st.pad_acc_z_mps2 / 9.81F);
   if (!st.started) {

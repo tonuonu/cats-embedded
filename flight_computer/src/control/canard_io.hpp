@@ -56,6 +56,7 @@ struct CanardStatus {
   uint8_t missing_outputs = 0;  ///< bit k: claimed output k is missing (Configure failed at boot), IMU fault latch
   bool test_running = false;
   bool pad_sample_seen = false;  ///< false: the frame check never ran (not started, or started off the pad)
+  bool on_pad = false;           ///< the last control step was in CALIBRATING/READY
   bool frame_ok = false;         ///< frame check (Ruling R24) passes
   float pad_acc_z_mps2 = 0.0F;
   canard::EnvState state = canard::EnvState::kDisabled;  ///< the envelope's own state and reason

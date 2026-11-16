@@ -202,7 +202,8 @@ Do these in order, with the board on the bench and the servo horns free.
    `flight_parse`. Check the gyro and accelerometer noise with the servos moving.
 9. **Live.** `ctrl_test live 100` (speed in m/s, finite and above 0; optional duration in s,
    default 20, capped at 120 with a note once the test starts; a number too large for a float,
-   such as 1e39, is refused as out of range). ROLL_2:
+   such as 1e39 or -1e39, is refused as out of range; a token with trailing characters, such as
+   1e39x, gives the usage line). ROLL_2:
    twisting the rocket by hand makes the canards oppose the rotation. FULL_4: the same for roll;
    with the default tilt gains of 0, tilting does not move them.
 10. **Safety returns.** A test ends on its timeout, on `ctrl_test stop` (prints `ctrl_test: stopped`,
@@ -210,8 +211,9 @@ Do these in order, with the board on the bench and the servo horns free.
     Unplugging USB does not end it.
 11. **Status.** `ctrl_test status` prints the boot layout and mode; whether control has started
     (or started off the pad without the IMU calibration); the envelope state with the envelope's own
-    reason, and separately the reason CONTROL_INFO logs (on the pad, IMU_FAULT while the frame check
-    fails, although the envelope still reads NONE until activation); the frame check (OK or FAIL
+    reason, and separately the reason CONTROL_INFO logs, with a note naming why they differ ("frame
+    check fails; latches at activation" on the pad, "frame check failed" past it, "no pad samples";
+    "-" before control starts, when nothing is recorded); the frame check (OK or FAIL
     with the filtered body-axis specific force in g, or "not run" when control started without pad
     samples); whether a test runs; each claimed output (ok/MISSING) and the warnings above.
 

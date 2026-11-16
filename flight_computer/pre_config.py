@@ -7,6 +7,10 @@ Import("env")
 
 print(env["PIOENV"])
 
+# Host unit tests build with the native toolchain; skip the ARM flags.
+if env["PIOENV"] == "native":
+    Return()
+
 env.Append(
     CFLAGS=["-std=c17"],
     CCFLAGS=[

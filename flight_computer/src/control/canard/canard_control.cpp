@@ -64,7 +64,11 @@ void CanardControl::Reset() {
 }
 
 bool CanardControl::StartTest(const TestCommand& cmd) {
-  if (cmd.kind == TestCommand::Kind::kNone || !m_envelope.StartTest(cmd, m_last_phase)) {
+  // A test only ends on its timeout, a cancel or a phase change, so the duration must be finite and positive. A
+  // non-finite forced speed would reach the gain schedule: refused, so the canards stay at trim.
+  const bool valid = cmd.kind != TestCommand::Kind::kNone && std::isfinite(cmd.duration_s) && cmd.duration_s > 0.0F &&
+                     (cmd.kind != TestCommand::Kind::kLive || std::isfinite(cmd.forced_v_mps));
+  if (!valid || !m_envelope.StartTest(cmd, m_last_phase)) {
     return false;
   }
   m_test = cmd;

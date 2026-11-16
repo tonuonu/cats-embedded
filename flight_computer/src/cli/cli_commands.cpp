@@ -28,6 +28,7 @@
 
 #include <strings.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -75,7 +76,7 @@ const clicmd_t cmd_table[] = {
     CLI_COMMAND_DEF("bl", "reset into bootloader", nullptr, cli_cmd_bl),
     CLI_COMMAND_DEF("cd", "change current working directory", nullptr, cli_cmd_cd),
     CLI_COMMAND_DEF("config", "print the flight config", nullptr, cli_cmd_config),
-    CLI_COMMAND_DEF("ctrl_test", "canard bench test", "sweep | live <speed> [s]", cli_cmd_ctrl_test),
+    CLI_COMMAND_DEF("ctrl_test", "canard bench test", "sweep | live <speed> [s] | stop", cli_cmd_ctrl_test),
     CLI_COMMAND_DEF("defaults", "reset to defaults and reboot", nullptr, cli_cmd_defaults),
     CLI_COMMAND_DEF("dump", "Dump configuration", nullptr, cli_cmd_dump),
     CLI_COMMAND_DEF("flash_erase", "erase the flash", nullptr, cli_cmd_erase_flash),
@@ -440,29 +441,44 @@ static void cli_cmd_version(const char *cmd_name [[maybe_unused]], char *args [[
 
 static void cli_cmd_log_enable(const char *cmd_name [[maybe_unused]], char *args [[maybe_unused]]) { log_enable(); }
 
-/// ctrl_test sweep | live <speed_mps> [seconds=20]. Bench only: CanardIo accepts it while the FSM is READY.
+/// ctrl_test sweep | live <speed_mps> [seconds=20, at most 120] | stop. Bench only: CanardIo accepts a test while
+/// the FSM is READY. A test ends on its timeout, on `ctrl_test stop` or on any FSM change.
 static void cli_cmd_ctrl_test(const char *cmd_name [[maybe_unused]], char *args) {
-  constexpr const char *kUsage = "usage: ctrl_test sweep | live <speed> [s]";
+  constexpr const char *kUsage = "usage: ctrl_test sweep | live <speed> [s] | stop";
+  constexpr float kMaxTestS = 120.0F;
+  if (args != nullptr && strcmp(args, "stop") == 0) {
+    if (task::global_canard_io == nullptr) {
+      cli_print_line("ctrl_test: layout is OFF");
+    } else {
+      task::global_canard_io->CancelTest();
+    }
+    return;
+  }
   canard::TestCommand cmd{};
   if (args != nullptr && strcmp(args, "sweep") == 0) {
-    // every output goes +max, -max, back to trim (4 s per output), plus 1 s margin
+    // every output goes +max, -max, back to trim (1 s each, 3 s per output), plus 1 s margin
     const auto n = canard::NumOutputs(static_cast<canard::Layout>(canard_boot_layout()));
-    cmd = {canard::TestCommand::Kind::kSweep, 0.0F, static_cast<float>(4U * n) + 1.0F};
+    cmd = {canard::TestCommand::Kind::kSweep, 0.0F, static_cast<float>(3U * n) + 1.0F};
   } else if (args != nullptr && strncmp(args, "live ", 5) == 0) {
     char *end = nullptr;
     const float speed = strtof(args + 5, &end);
     float seconds = 20.0F;
-    if (end == args + 5) {
+    // strtof also parses "inf" and "nan": both are refused.
+    if (end == args + 5 || !std::isfinite(speed) || !(speed > 0.0F)) {
       cli_print_line(kUsage);
       return;
     }
     if (*end != '\0') {
       char *end2 = nullptr;
       seconds = strtof(end, &end2);
-      if (end2 == end || !(seconds > 0.0F) || *end2 != '\0') {
+      if (end2 == end || !std::isfinite(seconds) || !(seconds > 0.0F) || *end2 != '\0') {
         cli_print_line(kUsage);
         return;
       }
+    }
+    if (seconds > kMaxTestS) {
+      seconds = kMaxTestS;
+      cli_print_line("ctrl_test: duration capped to 120 s");
     }
     cmd = {canard::TestCommand::Kind::kLive, speed, seconds};
   } else {

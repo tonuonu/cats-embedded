@@ -171,11 +171,14 @@ Do these in order, with the board on the bench and the servo horns free.
 6. **Stack check.** On a debug build with ROLL_2, read the line
    `StateEstimation stack: N of 512 words never used` 10 s after boot. Raise the stack if N < 128.
 7. **Sweep.** `ctrl_test` works only in READY: wait about 10 s after boot and hold the board still.
-   `ctrl_test sweep` moves each output in turn through +max, -max and back to trim. Confirm the
-   signs and set `ctrl_reverse`; measure the deflection per us and set `ctrl_us_per_deg`.
+   `ctrl_test sweep` moves each output in turn through +max, -max and back to trim, 1 s each (3 s
+   per output, so 7 s for ROLL_2 and 13 s for FULL_4 including a 1 s margin). Confirm the signs and
+   set `ctrl_reverse`; measure the deflection per us and set `ctrl_us_per_deg`.
 8. **IMU noise during the sweep.** `flash_start_write`, `ctrl_test sweep`, `flash_stop_write`,
    `flight_parse`. Check the gyro and accelerometer noise with the servos moving.
-9. **Live.** `ctrl_test live 100` (speed in m/s, optional duration in s, default 20). ROLL_2:
+9. **Live.** `ctrl_test live 100` (speed in m/s, finite and above 0; optional duration in s,
+   default 20, capped at 120). ROLL_2:
    twisting the rocket by hand makes the canards oppose the rotation. FULL_4: the same for roll;
    with the default tilt gains of 0, tilting does not move them.
-10. **Safety returns.** Unplugging USB, or a phase change, returns the canards to trim.
+10. **Safety returns.** A test ends on its timeout, on `ctrl_test stop`, or on any FSM change; the
+    canards then return to trim. Unplugging USB does not end it.

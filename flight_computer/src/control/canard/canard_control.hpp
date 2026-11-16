@@ -42,7 +42,8 @@ class CanardControl {
   /// while the canards are held at trim, the controller's mixed would-be command.
   ControlOutputs Update(const ControlInputs& in);
   /// Starts a pad test (sweep or live). Accepted only when the envelope accepts it (on the pad, not latched,
-  /// layout not kOff) and the kind is not kNone.
+  /// layout not kOff), the kind is not kNone, the duration is finite and > 0 and, for kLive, the forced speed is
+  /// finite.
   bool StartTest(const TestCommand& cmd);
   void CancelTest();
 

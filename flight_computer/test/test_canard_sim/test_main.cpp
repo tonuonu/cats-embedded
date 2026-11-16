@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include "control/canard/canard_control.hpp"
@@ -598,6 +599,37 @@ void Control_TestLive_UsesForcedVelocity() {
   TEST_ASSERT_FALSE(ctl.StartTest(TestCommand{}));  // kind kNone is refused
 }
 
+void Control_StartTest_RejectsBadCommands() {
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  PadUpright(ctl, 0.1);
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::nanf("");
+  using Kind = TestCommand::Kind;
+  // Duration must be finite and > 0; a live test's forced speed must be finite.
+  for (const float duration : {nan, inf, -inf, 0.0F, -1.0F}) {
+    TEST_ASSERT_FALSE(ctl.StartTest(TestCommand{Kind::kSweep, 0.0F, duration}));
+    TEST_ASSERT_FALSE(ctl.StartTest(TestCommand{Kind::kLive, 100.0F, duration}));
+  }
+  for (const float v : {nan, inf, -inf}) {
+    TEST_ASSERT_FALSE(ctl.StartTest(TestCommand{Kind::kLive, v, 5.0F}));
+  }
+  // Nothing was started: the canards stay at trim.
+  ControlInputs in;
+  const double acc[3] = {0.0, 0.0, kGravity};
+  BodyToBoard(acc, in.acc_board_mps2);
+  const double body[3] = {0.0, 0.0, 30.0};
+  BodyToBoard(body, in.gyro_board_dps);
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kReady;
+  in.dt_s = kTickS;
+  const ControlOutputs out = ctl.Update(in);
+  for (const float d : out.defl_deg) TEST_ASSERT_EQUAL_FLOAT(0.0F, d);
+  // A valid command is still accepted afterwards.
+  TEST_ASSERT_TRUE(ctl.StartTest(TestCommand{Kind::kLive, 100.0F, 5.0F}));
+}
+
 void Control_InvertedMount_LatchesImuFaultAtActivation() {
   // Ruling R24: long_sign wrong (the board reads -1 g on body z at rest). The pad stays NEUTRAL_PAD; activation
   // latches IMU_FAULT instead of flying an upside-down frame.
@@ -823,6 +855,7 @@ int main() {
   RUN_TEST(Control_Step_MixesChosenAxis);
   RUN_TEST(Control_TestSweep_StepsEachOutput);
   RUN_TEST(Control_TestLive_UsesForcedVelocity);
+  RUN_TEST(Control_StartTest_RejectsBadCommands);
   RUN_TEST(Control_InvertedMount_LatchesImuFaultAtActivation);
   RUN_TEST(Control_TiltedRail10_ActivatesNormally);
   RUN_TEST(Control_NoPadSamples_LatchesImuFaultAtActivation);

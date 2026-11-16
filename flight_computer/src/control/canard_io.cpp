@@ -203,3 +203,11 @@ bool CanardIo::StartTest(const canard::TestCommand& cmd) {
   osMutexRelease(m_mutex);
   return accepted;
 }
+
+void CanardIo::CancelTest() {
+  if (m_mutex == nullptr || osMutexAcquire(m_mutex, osWaitForever) != osOK) {
+    return;
+  }
+  m_control.CancelTest();
+  osMutexRelease(m_mutex);
+}

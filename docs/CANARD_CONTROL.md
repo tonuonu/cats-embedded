@@ -13,8 +13,9 @@ Design background: `docs/superpowers/specs/2026-11-16-canard-control-design.md`.
   Keep `ctrl_tilt_kp` and `ctrl_tilt_kd` at 0 until then. Roll control is the stage 1 goal.
 - The roll interaction between the canards and the aft fins is **not modelled**. The `STEP` flight
   measures it; the gains for `CLOSED` come from that measurement.
-- `CONTROL_INFO` deflections are logged as 0.1 degree in an int8, so they saturate at +-12.7 degrees
-  even though `ctrl_max_defl` allows 15.0.
+- `CONTROL_INFO` deflections are logged as 0.1 degree in an int8, so they saturate at +-12.7
+  degrees. `ctrl_max_defl` therefore stops at 11.0 degrees, which is also where the mechanical stops
+  are.
 
 ## Hardware
 
@@ -49,7 +50,7 @@ prints a reminder after each `set ctrl_...`.
 | `ctrl_v_enable` | 10 to 100 | 15 | m/s. Control starts above this speed. 15 m/s because the slow H motors burn out at low speed. |
 | `ctrl_v_ref` | 20 to 300 | 100 | m/s. Speed at which the gains apply unscaled; gains are scheduled with 1/q |
 | `ctrl_tilt_v_min` | 20 to 300 | 70 | m/s. Tilt control is only active above this speed |
-| `ctrl_max_defl` | 0 to 150 | 80 | 0.1 deg, so 80 = 8.0 deg. Limit per canard |
+| `ctrl_max_defl` | 0 to 110 | 80 | 0.1 deg, so 80 = 8.0 deg. Limit per canard. 110 = 11.0 deg, the mechanical stops (and within the log's +-12.7 deg) |
 | `ctrl_abort_tilt` | 5 to 60 | 30 | deg. Tilt above this latches neutral |
 | `ctrl_roll_kp` | 0 to 65535 | 50 | x1000 (50 = 0.05). Roll proportional gain |
 | `ctrl_roll_ki` | 0 to 65535 | 200 | x1000 (200 = 0.2). Roll integral gain |

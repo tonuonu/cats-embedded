@@ -14,6 +14,7 @@
 #include "control/canard_io.hpp"
 
 #include <cstddef>
+#include <cstdint>
 
 /* The lookup tables in enum_str_maps.hpp are indexed by the canard enum values. */
 static_assert(static_cast<size_t>(canard::Layout::kOff) == 0 && static_cast<size_t>(canard::Layout::kRoll2) == 1 &&
@@ -23,6 +24,11 @@ static_assert(static_cast<size_t>(canard::FlightMode::kShadow) == 0 &&
               static_cast<size_t>(canard::FlightMode::kClosed) == 2);
 static_assert(static_cast<size_t>(canard::StepAxis::kRoll) == 0 && static_cast<size_t>(canard::StepAxis::kT1) == 1 &&
               static_cast<size_t>(canard::StepAxis::kT2) == 2);
+
+/* ctrl_max_defl upper limit, 0.1 deg: the mechanical stops are at +-11 deg. CONTROL_INFO logs deflections as int8 in
+ * 0.1 deg, so the limit must stay within its +-12.7 deg. */
+constexpr uint8_t kCtrlMaxDeflDdeg = 110;
+static_assert(kCtrlMaxDeflDdeg <= INT8_MAX, "CONTROL_INFO logs the deflection as int8 in 0.1 deg");
 
 #undef LOOKUP_TABLE_ENTRY
 
@@ -224,7 +230,7 @@ const cli_value_t value_table[] = {
      ctrl_reboot_note},
     {"ctrl_max_defl",
      VAR_UINT8,
-     {.minmax_unsigned = {0, 150}},
+     {.minmax_unsigned = {0, kCtrlMaxDeflDdeg}},
      offsetof(cats_config_t, canard.max_defl_ddeg),
      ctrl_reboot_note},
     {"ctrl_abort_tilt",

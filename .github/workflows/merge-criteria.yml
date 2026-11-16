@@ -117,6 +117,11 @@ jobs:
       - name: Install PlatformIO Libraries
         run: pio pkg install --project-dir ${{ matrix.project }}
 
+      - name: Native tests
+        # Host unit tests of the canard control module (flight_computer/test, env:native).
+        if: ${{ matrix.project == 'flight_computer' }}
+        run: platformio test -d ${{ matrix.project }} --environment native
+
       - name: Build
         shell: bash
         run: |

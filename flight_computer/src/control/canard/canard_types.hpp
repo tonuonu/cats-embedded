@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace control::canard {
+namespace canard {
 
 enum class Layout : uint8_t { kOff, kRoll2, kFull4 };
 enum class FlightMode : uint8_t { kShadow, kStep, kClosed };
@@ -66,4 +66,4 @@ struct TestCommand {
   float duration_s = 0.0F;
 };
 
-}  // namespace control::canard
+}  // namespace canard

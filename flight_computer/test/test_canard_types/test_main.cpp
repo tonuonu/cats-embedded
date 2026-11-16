@@ -6,7 +6,7 @@
 
 #include "control/canard/canard_types.hpp"
 
-using namespace control::canard;
+using namespace canard;
 
 void setUp() {}
 void tearDown() {}

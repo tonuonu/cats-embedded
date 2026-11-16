@@ -11,10 +11,14 @@
 
 namespace canard {
 
-/// Default gains at v_ref = 100 m/s, tuned in the closed-loop host simulation test/test_canard_sim
-/// (Sim_Roll_DampsAt100, Sim_Roll_StableAcrossEffectiveness, Sim_Roll_ReversedTripsAuthority,
-/// Sim_Full4_TiltAt100, Sim_Full4_TiltAt70_NoGrowth, Sim_StuckOutput_Stable, Sim_Roll_LowSpeed,
-/// Sim_MassSweep) on the camera-nose Peregrine model in test/test_canard_sim/vehicle.hpp.
+/// Default gains at v_ref = 100 m/s for the camera-nose Peregrine model in test/test_canard_sim/vehicle.hpp.
+/// Selection rule (the brief's pass criteria alone do not discriminate: aero damping meets most of them):
+/// - roll: largest round kp with a small-signal gain margin >= 3 against the 10 ms delay and the servo, over
+///   15-138 m/s and -15 % inertia; ki = 4/s * kp. Pinned by Sim_Roll_GainMargin (effectiveness x3 decays) and by
+///   the residual-roll checks in Sim_Roll_DampsAt100, Sim_Roll_StableAcrossEffectiveness, Sim_Roll_LowSpeed and
+///   Sim_MassSweep (the disturbance roll is removed to < 2 deg/s).
+/// - tilt: kd for a well-damped weathercock mode with a gain margin >= 10 (measured ~15 in the tuning harness);
+///   kp = 1 deg/deg. No test pins the tilt margin; Sim_Full4_TiltAt100/TiltAt70_NoGrowth check the criteria.
 /// Roll: canard degrees per deg/s of roll rate and per degree of integrated roll angle.
 constexpr float kDefaultRollKp = 0.05F;
 constexpr float kDefaultRollKi = 0.2F;

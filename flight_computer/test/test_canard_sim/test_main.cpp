@@ -270,12 +270,25 @@ void AssertStillActive(const Trace& tr) {
 
 /// No oscillation growth: the peak over the last second is not above the peak over the second before it
 /// (plus a small floor for numerical noise), and never above the initial value.
-void AssertNoGrowth(const Trace& tr, const std::vector<double>& x, double x0, double floor) {
+void AssertNoLateGrowth(const Trace& tr, const std::vector<double>& x, double floor) {
   const double end = tr.t.back();
   const double last = MaxAbsFrom(tr.t, x, end - 1.0);
   const double before = MaxAbsFrom(tr.t, x, end - 2.0, end - 1.0);
   TEST_ASSERT_TRUE(last <= before + floor);
+}
+
+void AssertNoGrowth(const Trace& tr, const std::vector<double>& x, double x0, double floor) {
+  AssertNoLateGrowth(tr, x, floor);
   TEST_ASSERT_TRUE(MaxAbsFrom(tr.t, x, 0.0) <= std::fabs(x0) + floor);
+}
+
+/// The disturbance roll is removed: |p| over the last 0.2 s of the run is below 2 deg/s. With zero gains the
+/// disturbance leaves a steady 4-23 deg/s, so this pins the controller rather than the aerodynamic damping.
+constexpr double kResidualRollDps = 2.0;
+void AssertResidualRoll(const Trace& tr, const char* name) {
+  const double residual = MaxAbsFrom(tr.t, tr.p_dps, tr.t.back() - 0.2);
+  std::printf("SIM %s: residual %.3f deg/s (criterion < %.1f)\n", name, residual, kResidualRollDps);
+  TEST_ASSERT_TRUE(residual < kResidualRollDps);
 }
 
 void Report(const char* name, double metric, const char* unit) { std::printf("SIM %s: %.3f %s\n", name, metric, unit); }
@@ -297,6 +310,7 @@ void CheckDampsAt100(double inertia_scale, const char* name) {
   const double ts = SettleTime(tr.t, tr.p_dps, 20.0);
   Report(name, ts, "s to |p| < 20 deg/s (criterion <= 1 s)");
   TEST_ASSERT_TRUE(ts <= 1.0);
+  AssertResidualRoll(tr, name);
   AssertStillActive(tr);
 }
 
@@ -305,7 +319,8 @@ void CheckDampsAt100(double inertia_scale, const char* name) {
 // ---------------------------------------------------------------- vehicle model
 
 void Vehicle_CanardsAloneStop360In0p12s() {
-  // canard_estimate.py: 8 deg at 100 m/s, rho 1.2, "stops 360 deg/s in 0.12 s" (canards alone, no damping).
+  // canard_estimate.py: 8 deg at 100 m/s, "stops 360 deg/s in 0.12 s" (canards alone, no damping). rho 1.2 is the
+  // script's own density, used here to reproduce its figure; the plant uses ISA 1.225 like the firmware schedule.
   const double q = 0.5 * 1.2 * 100.0 * 100.0;
   const double accel = q * vehicle::kCanardRollNmPerDegPa * 8.0 / vehicle::kIrollLiftoff;
   const double t_stop = 2.0 * vehicle::kPi / accel;
@@ -384,6 +399,32 @@ void Control_NonFinite_ZerosAndLatchesImuFault() {
   out = ctl.Update(in);
   TEST_ASSERT_TRUE(std::isfinite(out.roll_rate_dps) && std::isfinite(out.tilt_deg[0]) &&
                    std::isfinite(out.tilt_deg[1]) && std::isfinite(out.cmd_deg[0]));
+  for (const float d : out.defl_deg) TEST_ASSERT_EQUAL_FLOAT(0.0F, d);
+}
+
+void Control_Latched_LogsWouldBeCommand_SendsZero() {
+  CanardControl ctl;
+  ctl.Configure(SimParams(Layout::kRoll2));
+  ControlInputs in;
+  in.long_axis = kLongAxis;
+  in.long_sign = kLongSign;
+  in.phase = Phase::kCoasting;
+  in.velocity_mps = 100.0F;
+  in.dt_s = kTickS;
+  const double body[3] = {0.0, 0.0, 50.0};
+  BodyToBoard(body, in.gyro_board_dps);
+  ControlOutputs out = ctl.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kActive), static_cast<int>(out.state));
+  TEST_ASSERT_TRUE(out.defl_deg[0] < -0.1F);
+  ControlInputs faulty = in;
+  faulty.imu_faulty = true;
+  out = ctl.Update(faulty);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(out.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(LatchReason::kImuFault), static_cast<int>(out.reason));
+  for (int i = 0; i < 5; ++i) out = ctl.Update(in);
+  TEST_ASSERT_EQUAL(static_cast<int>(EnvState::kNeutralLatched), static_cast<int>(out.state));
+  TEST_ASSERT_TRUE(out.cmd_deg[0] < -0.1F);  // the controller still runs and logs its would-be command
+  TEST_ASSERT_EQUAL_FLOAT(out.cmd_deg[0], out.cmd_deg[1]);
   for (const float d : out.defl_deg) TEST_ASSERT_EQUAL_FLOAT(0.0F, d);
 }
 
@@ -508,6 +549,7 @@ void Sim_Roll_StableAcrossEffectiveness() {
                   eff, v, ts, MaxAbsFrom(tr.t, tr.p_dps, 4.0));
       TEST_ASSERT_TRUE(ts <= 2.0);
       AssertNoGrowth(tr, tr.p_dps, c.p0_dps, 0.5);
+      AssertResidualRoll(tr, "Sim_Roll_StableAcrossEffectiveness");
       AssertStillActive(tr);
     }
   }
@@ -605,7 +647,8 @@ void Sim_StuckOutput_Stable() {
                 layout == Layout::kFull4 ? "FULL_4" : "ROLL_2", tilt, roll, MaxAbsFrom(tr.t, tr.p_dps, 4.0));
     TEST_ASSERT_TRUE(tilt < c.params.abort_tilt_deg);
     TEST_ASSERT_TRUE(roll < kBoundedRollDps);
-    AssertNoGrowth(tr, tr.p_dps, roll, 0.5);
+    // Roll starts at 0 and is driven by the stuck output, so only late growth is checked; the peak is bounded above.
+    AssertNoLateGrowth(tr, tr.p_dps, 0.5);
     AssertStillActive(tr);
   }
 }
@@ -622,6 +665,7 @@ void Sim_Roll_LowSpeed() {
   Report("Sim_Roll_LowSpeed 25 m/s", ts, "s to |p| < 20 deg/s (criterion <= 3 s)");
   TEST_ASSERT_TRUE(ts <= 3.0);
   AssertNoGrowth(tr, tr.p_dps, c.p0_dps, 0.5);
+  AssertResidualRoll(tr, "Sim_Roll_LowSpeed 25 m/s");
   AssertStillActive(tr);
 
   c.v_mps = 15.0;
@@ -634,6 +678,33 @@ void Sim_Roll_LowSpeed() {
   AssertStillActive(tr);
 }
 
+void Sim_Roll_GainMargin() {
+  // Gain-margin regression for the roll gains: with the canard roll effectiveness x3, a 1 deg/s probe (small
+  // enough to stay unsaturated, max |u| ~2.4 deg at 15 m/s) must decay over the speed and inertia grid,
+  // including the 10 ms delay and the servo. H-class mass properties below 30 m/s.
+  for (const double v : {15.0, 30.0, 60.0, 100.0, 138.0}) {
+    for (const double inertia : {1.0, 0.85}) {
+      Case c = RollCase(v, 1.0);
+      c.disturbance_eq_deg = 0.0;
+      c.eff = 3.0;
+      c.inertia_scale = inertia;
+      if (v <= 30.0) {
+        c.i_roll = vehicle::kIrollH;
+        c.i_pitch = vehicle::kIpitchH;
+        c.cg_m = vehicle::kCgHM;
+      }
+      c.duration_s = 4.0;
+      const Trace tr = Run(c);
+      const double first = MaxAbsFrom(tr.t, tr.p_dps, 0.2, 1.2);
+      const double last = MaxAbsFrom(tr.t, tr.p_dps, 3.0);
+      std::printf("SIM Sim_Roll_GainMargin v %.0f I x%.2f: peak 0.2-1.2 s %.4f, 3-4 s %.6f deg/s\n", v, inertia, first,
+                  last);
+      TEST_ASSERT_TRUE(last < 0.1 * first);
+      AssertStillActive(tr);
+    }
+  }
+}
+
 void Sim_MassSweep() { CheckDampsAt100(0.85, "Sim_MassSweep (inertia -15 %)"); }
 
 int main() {
@@ -642,6 +713,7 @@ int main() {
   RUN_TEST(Control_Shadow_LogsWouldBeCommand_SendsZero);
   RUN_TEST(Control_Closed_SlewLimitedAtDefaultWhenUnset);
   RUN_TEST(Control_NonFinite_ZerosAndLatchesImuFault);
+  RUN_TEST(Control_Latched_LogsWouldBeCommand_SendsZero);
   RUN_TEST(Control_Off_NoOutputs);
   RUN_TEST(Control_Step_MixesChosenAxis);
   RUN_TEST(Control_TestSweep_StepsEachOutput);
@@ -654,6 +726,7 @@ int main() {
   RUN_TEST(Sim_Full4_TiltAt70_NoGrowth);
   RUN_TEST(Sim_StuckOutput_Stable);
   RUN_TEST(Sim_Roll_LowSpeed);
+  RUN_TEST(Sim_Roll_GainMargin);
   RUN_TEST(Sim_MassSweep);
   return UNITY_END();
 }

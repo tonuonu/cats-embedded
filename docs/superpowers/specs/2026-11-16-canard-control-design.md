@@ -89,8 +89,13 @@ sense, which is roll.
     nose joint is still closed when it fires.
   - Pyro 2 = main charge on the nose shoulder bulkhead; firing it releases the nose.
   - Nothing electrical has to work across a joint after that joint has opened.
+  - This is the Vega's default event mapping: apogee → high-current channel 1, main → high-current
+    channel 2. It's also how flight 2 was flown (owner confirmed: drogue low, main high), so no
+    recovery config change is needed.
 - **Servo power:** directly from the camera's 2S 18650 pack (6.0–8.4 V, inside the HV6160's
   4.8–8.4 V), through a 7.5 A fuse, with 1000 µF at the cassette.
+  - Cells: Samsung INR18650-25R, a generic high-drain cell rated 2500 mAh and 20 A continuous. That
+    covers four stalled servos (~11 A worst case) plus the camera.
   - The Vega has its own 2S LiPo, so servo sag can never brown out recovery.
   - The Vega servo connectors carry signal and ground only; the 5 V pin is unconnected.
   - Bench-verify stall current at 8.4 V (estimated ~2.7 A each) and operation from the Vega's

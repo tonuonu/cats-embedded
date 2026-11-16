@@ -17,14 +17,15 @@ namespace canard {
 ///   15-138 m/s and -15 % inertia; ki = 4/s * kp. Pinned by Sim_Roll_GainMargin (effectiveness x3 decays) and by
 ///   the residual-roll checks in Sim_Roll_DampsAt100, Sim_Roll_StableAcrossEffectiveness, Sim_Roll_LowSpeed and
 ///   Sim_MassSweep (the disturbance roll is removed to < 2 deg/s).
-/// - tilt: kd for a well-damped weathercock mode with a gain margin >= 10 (measured ~15 in the tuning harness);
-///   kp = 1 deg/deg. No test pins the tilt margin; Sim_Full4_TiltAt100/TiltAt70_NoGrowth check the criteria.
+/// - tilt: 0 (Ruling R23). The rotation-only sim cannot validate tilt gains (the velocity stays vertical), so FULL_4
+///   stops roll only until the stage-2 flight-path sim exists. The tuning-harness candidates (kp 1, kd 0.2) live in
+///   test/test_canard_sim as kSimTiltKp/kSimTiltKd.
 /// Roll: canard degrees per deg/s of roll rate and per degree of integrated roll angle.
 constexpr float kDefaultRollKp = 0.05F;
 constexpr float kDefaultRollKi = 0.2F;
 /// Tilt: canard degrees per degree of tilt and per deg/s of transverse rate.
-constexpr float kDefaultTiltKp = 1.0F;
-constexpr float kDefaultTiltKd = 0.2F;
+constexpr float kDefaultTiltKp = 0.0F;
+constexpr float kDefaultTiltKd = 0.0F;
 /// Output slew limit in deg/s (the CanardParams::slew_dps default). Also used whenever slew_dps is not a positive
 /// finite number, which a configured value can still be.
 constexpr float kDefaultSlewDps = 300.0F;

@@ -9,7 +9,8 @@ Design background: `docs/superpowers/specs/2026-11-16-canard-control-design.md`.
 ## Known limitations
 
 - The tilt (vertical hold, `FULL_4`) gains are **not validated by a flight-path simulation yet**.
-  Stage 2 needs that before vertical hold is flown. Roll control is the stage 1 goal.
+  Their defaults are 0, so `FULL_4` controls roll only until the stage-2 flight-path sim exists.
+  Keep `ctrl_tilt_kp` and `ctrl_tilt_kd` at 0 until then. Roll control is the stage 1 goal.
 - The roll interaction between the canards and the aft fins is **not modelled**. The `STEP` flight
   measures it; the gains for `CLOSED` come from that measurement.
 - `CONTROL_INFO` deflections are logged as 0.1 degree in an int8, so they saturate at +-12.7 degrees
@@ -49,8 +50,8 @@ without a reboot changes nothing. The CLI prints a reminder.
 | `ctrl_abort_tilt` | 5 to 60 | 30 | deg. Tilt above this latches neutral |
 | `ctrl_roll_kp` | 0 to 65535 | 50 | x1000 (50 = 0.05). Roll proportional gain |
 | `ctrl_roll_ki` | 0 to 65535 | 200 | x1000 (200 = 0.2). Roll integral gain |
-| `ctrl_tilt_kp` | 0 to 65535 | 1000 | x1000. Tilt proportional gain |
-| `ctrl_tilt_kd` | 0 to 65535 | 200 | x1000. Tilt derivative gain |
+| `ctrl_tilt_kp` | 0 to 65535 | 0 | x1000. Tilt proportional gain. Must stay 0 until the stage-2 sim |
+| `ctrl_tilt_kd` | 0 to 65535 | 0 | x1000. Tilt derivative gain. Must stay 0 until the stage-2 sim |
 | `ctrl_step_axis` | ROLL, T1, T2 | ROLL | STEP axis. T1/T2 only with FULL_4 |
 | `ctrl_step_defl` | 0 to 100 | 30 | 0.1 deg, so 30 = 3.0 deg. Doublet amplitude |
 | `ctrl_step_ms` | 50 to 2000 | 300 | ms per side of a doublet |
@@ -172,6 +173,6 @@ Do these in order, with the board on the bench and the servo horns free.
 8. **IMU noise during the sweep.** `flash_start_write`, `ctrl_test sweep`, `flash_stop_write`,
    `flight_parse`. Check the gyro and accelerometer noise with the servos moving.
 9. **Live.** `ctrl_test live 100` (speed in m/s, optional duration in s, default 20). ROLL_2:
-   twisting the rocket by hand makes the canards oppose the rotation. FULL_4: tilting makes them
-   push back toward vertical.
+   twisting the rocket by hand makes the canards oppose the rotation. FULL_4: the same for roll;
+   with the default tilt gains of 0, tilting does not move them.
 10. **Safety returns.** Unplugging USB, or a phase change, returns the canards to trim.

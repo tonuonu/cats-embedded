@@ -294,7 +294,7 @@ board's saved config to defaults once.
 | `ctrl_abort_tilt` | deg, latch-to-neutral tilt | 30 |
 | `ctrl_tilt_v_min` | m/s, tilt control off below this (`FULL_4`) | 70 |
 | `ctrl_roll_kp`, `ctrl_roll_ki` | roll gains at `v_ref` | from simulation |
-| `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | from simulation |
+| `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | 0 until the stage-2 flight-path sim (Ruling R23) |
 | `ctrl_us_per_deg` | linkage calibration | from bench |
 | `ctrl_center_us` | servo centre pulse | 1500 (set 1520 for HV6160) |
 | `ctrl_servo_hz` | servo frame rate, applied to all claimed outputs | 50 (333 for HV6160 after bench check) |

@@ -36,6 +36,12 @@ void BodyToBoard(const double body[3], float board[3]) {
   board[2] = static_cast<float>(kLongSign * body[1]);
 }
 
+/// Tilt gains for the FULL_4 sims: the tuning-harness values (kd for a well-damped weathercock mode, gain margin
+/// ~15; kp = 1 deg/deg). They are not the firmware defaults: those stay 0 until the stage-2 flight-path sim exists
+/// (Ruling R23), so the tilt sims set these explicitly to keep the tilt path exercised.
+constexpr float kSimTiltKp = 1.0F;
+constexpr float kSimTiltKd = 0.2F;
+
 CanardParams SimParams(Layout layout) {
   CanardParams p;
   p.layout = layout;
@@ -47,8 +53,8 @@ CanardParams SimParams(Layout layout) {
   p.abort_tilt_deg = 30.0F;
   p.roll_kp = kDefaultRollKp;
   p.roll_ki = kDefaultRollKi;
-  p.tilt_kp = kDefaultTiltKp;
-  p.tilt_kd = kDefaultTiltKd;
+  p.tilt_kp = kSimTiltKp;
+  p.tilt_kd = kSimTiltKd;
   p.slew_dps = kDefaultSlewDps;
   return p;
 }
@@ -291,6 +297,17 @@ void AssertResidualRoll(const Trace& tr, const char* name) {
   TEST_ASSERT_TRUE(residual < kResidualRollDps);
 }
 
+/// Largest tilt part of the FULL_4 command over the trace: a pure roll command moves all four canards alike, so any
+/// spread around their mean is tilt. Shows the tilt path is exercised (with zero tilt gains this stays 0).
+double MaxTiltCommandDeg(const Trace& tr) {
+  double m = 0.0;
+  for (const ControlOutputs& o : tr.out) {
+    const double mean = (o.cmd_deg[0] + o.cmd_deg[1] + o.cmd_deg[2] + o.cmd_deg[3]) / 4.0;
+    for (const float d : o.cmd_deg) m = std::fmax(m, std::fabs(d - mean));
+  }
+  return m;
+}
+
 void Report(const char* name, double metric, const char* unit) { std::printf("SIM %s: %.3f %s\n", name, metric, unit); }
 
 Case RollCase(double v_mps, double p0_dps) {
@@ -326,6 +343,14 @@ void Vehicle_CanardsAloneStop360In0p12s() {
   const double t_stop = 2.0 * vehicle::kPi / accel;
   Report("Vehicle_CanardsAloneStop360In0p12s", t_stop, "s");
   TEST_ASSERT_TRUE(std::fabs(t_stop - 0.12) < 0.005);
+}
+
+// ---------------------------------------------------------------- defaults
+
+void Defaults_TiltGainsZero_UntilStage2Sim() {
+  // Ruling R23: FULL_4 stops roll only until the stage-2 flight-path sim validates tilt gains.
+  TEST_ASSERT_EQUAL_FLOAT(0.0F, kDefaultTiltKp);
+  TEST_ASSERT_EQUAL_FLOAT(0.0F, kDefaultTiltKd);
 }
 
 // ---------------------------------------------------------------- facade
@@ -612,6 +637,8 @@ void Sim_Full4_TiltAt100() {
   const double ts = SettleTime(tr.t, tr.tilt_deg, 2.0);
   Report("Sim_Full4_TiltAt100", ts, "s to tilt < 2 deg (criterion <= 2 s)");
   TEST_ASSERT_TRUE(ts <= 2.0);
+  Report("Sim_Full4_TiltAt100 tilt command", MaxTiltCommandDeg(tr), "deg peak (criterion > 0.1)");
+  TEST_ASSERT_TRUE(MaxTiltCommandDeg(tr) > 0.1);
   AssertStillActive(tr);
 }
 
@@ -626,6 +653,8 @@ void Sim_Full4_TiltAt70_NoGrowth() {
   const double peak = MaxAbsFrom(tr.t, tr.tilt_deg, 0.0);
   Report("Sim_Full4_TiltAt70_NoGrowth", peak, "deg peak tilt (criterion <= 5.1)");
   TEST_ASSERT_TRUE(peak <= 5.1);
+  Report("Sim_Full4_TiltAt70_NoGrowth tilt command", MaxTiltCommandDeg(tr), "deg peak (criterion > 0.1)");
+  TEST_ASSERT_TRUE(MaxTiltCommandDeg(tr) > 0.1);
   AssertStillActive(tr);
 }
 
@@ -710,6 +739,7 @@ void Sim_MassSweep() { CheckDampsAt100(0.85, "Sim_MassSweep (inertia -15 %)"); }
 int main() {
   UNITY_BEGIN();
   RUN_TEST(Vehicle_CanardsAloneStop360In0p12s);
+  RUN_TEST(Defaults_TiltGainsZero_UntilStage2Sim);
   RUN_TEST(Control_Shadow_LogsWouldBeCommand_SendsZero);
   RUN_TEST(Control_Closed_SlewLimitedAtDefaultWhenUnset);
   RUN_TEST(Control_NonFinite_ZerosAndLatchesImuFault);

@@ -59,6 +59,28 @@ void LiveArgs_OverflowIsOutOfRange() {
   TEST_ASSERT_EQUAL(static_cast<int>(LiveTestArgs::Error::kNone), static_cast<int>(ParseLiveTestArgs("100 500").error));
 }
 
+void LiveArgs_GarbageBeforeRange() {
+  // A token with trailing garbage is a usage error even when its number would overflow.
+  using E = LiveTestArgs::Error;
+  for (const char* text : {"100 1e39x", "1e39x 5", "1e39x", "-1e39x"}) {
+    TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(E::kUsage), static_cast<int>(ParseLiveTestArgs(text).error), text);
+  }
+}
+
+void LiveArgs_NegativeOverflowIsOutOfRange() {
+  using E = LiveTestArgs::Error;
+  TEST_ASSERT_EQUAL(static_cast<int>(E::kSpeedRange), static_cast<int>(ParseLiveTestArgs("-1e39").error));
+  TEST_ASSERT_EQUAL(static_cast<int>(E::kSpeedRange), static_cast<int>(ParseLiveTestArgs("-1e39 5").error));
+  TEST_ASSERT_EQUAL(static_cast<int>(E::kDurationRange), static_cast<int>(ParseLiveTestArgs("100 -1e39").error));
+}
+
+void LiveArgs_UnderflowReadsAsZero() {
+  // Documented: an underflow to 0 is a usage error (<= 0), not out of range; errno is not used.
+  using E = LiveTestArgs::Error;
+  TEST_ASSERT_EQUAL(static_cast<int>(E::kUsage), static_cast<int>(ParseLiveTestArgs("100 1e-50").error));
+  TEST_ASSERT_EQUAL(static_cast<int>(E::kUsage), static_cast<int>(ParseLiveTestArgs("1e-50").error));
+}
+
 void LiveArgs_BadSpeedRejected() {
   for (const char* text : {"", "x", "inf", "nan", "0", "-1", "-inf", "inf 5", "nan 5", "0 5"}) {
     TEST_ASSERT_FALSE_MESSAGE(ParseLiveTestArgs(text).ok, text);
@@ -73,6 +95,9 @@ int main() {
   RUN_TEST(LiveArgs_DurationCappedAt120);
   RUN_TEST(LiveArgs_BadDurationRejected);
   RUN_TEST(LiveArgs_OverflowIsOutOfRange);
+  RUN_TEST(LiveArgs_GarbageBeforeRange);
+  RUN_TEST(LiveArgs_NegativeOverflowIsOutOfRange);
+  RUN_TEST(LiveArgs_UnderflowReadsAsZero);
   RUN_TEST(LiveArgs_BadSpeedRejected);
   return UNITY_END();
 }

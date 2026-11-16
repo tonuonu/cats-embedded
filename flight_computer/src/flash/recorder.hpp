@@ -46,7 +46,7 @@ inline constexpr uint32_t REC_ID_MASK = 0x0000000F;
   GNSS_INFO          = 1U << 12U,  // 0x2000
   VOLTAGE_INFO       = 1U << 13U,  // 0x4000
 // Periodic, recorded at the control rate while the canard layout latched at boot is not OFF
-  CONTROL_INFO       = 1U << 14U,  // 0x8000
+  CONTROL_INFO       = 1U << 14U,  // 0x4000
 };
 // clang-format on
 

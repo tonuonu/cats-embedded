@@ -65,8 +65,12 @@ prints a reminder after each `set ctrl_...`.
 | `ctrl_us_per_deg` | 10 to 1000 | 100 | x10 (100 = 10.0 us per degree). Measure on the bench |
 | `ctrl_center_us` | 1000 to 2000 | 1500 | us. Servo centre pulse. **1520 for the MKS HV6160** |
 | `ctrl_servo_hz` | 50 to 333 | 50 | Hz. Servo frame rate. **333 for the HV6160 once the bench check passes** |
-| `ctrl_trim` | 4 values, us | 0,0,0,0 | us added per output (clamped to +-300 us in use). Not range-checked by the CLI |
-| `ctrl_reverse` | 4 values, 0/1 | 0,0,0,0 | 1 reverses an output's direction |
+| `ctrl_trim` | 4 values, us | 0,0,0,0 | us added per output (clamped to +-300 us in use). Not range-checked by the CLI. Always give all 4 values |
+| `ctrl_reverse` | 4 values, 0/1 | 0,0,0,0 | 1 reverses an output's direction. Always give all 4 values |
+
+**Always give all four values** for `ctrl_trim` and `ctrl_reverse` (for example
+`set ctrl_trim = 20,0,0,-15`). The CLI's array parser writes garbage into the remaining elements
+when fewer values are given.
 
 Example for the HV6160, roll only:
 
@@ -94,8 +98,14 @@ re-enter your settings. External tools such as the CATS Configurator need the ne
 ACTIVE needs the flight state THRUSTING or later and speed at or above `ctrl_v_enable`. It also
 needs the frame check: on the pad, the body-axis specific force (averaged over about 1 s) must be
 above 0.8 g along the nose. A board whose long-axis sign is wrong reads about -1 g there, so
-activation latches IMU_FAULT instead. Any exit
-condition latches NEUTRAL_LATCHED for the rest of the flight and records its reason:
+activation latches IMU_FAULT instead.
+
+A latch is NEUTRAL_LATCHED for the rest of the flight, with its reason recorded. Which conditions
+latch depends on the state:
+
+- NEUTRAL_PAD: only SIM and IMU_FAULT (a non-finite input) latch. The other conditions are not
+  checked on the pad; an IMU fault flag or a failed frame check latches IMU_FAULT at activation.
+- ACTIVE: every condition below is an exit from ACTIVE (see Flight plan for which apply per mode).
 
 | Reason | Value | Cause |
 |---|---|---|
@@ -108,11 +118,12 @@ condition latches NEUTRAL_LATCHED for the rest of the flight and records its rea
 | AUTHORITY | 6 | CLOSED only. Roll authority check: roll rate above 90 deg/s for 0.5 s while the roll command is saturated against it (loop not working) |
 | STEP_DONE | 7 | last STEP doublet finished |
 | STEP_ROLL_RATE | 8 | STEP only. Roll rate above 360 deg/s |
-| SIM | 9 | `sim` run (the servos never move in a sim) |
+| SIM | 9 | `sim` run (the servos never move in a sim; `sim` exists only in `CATS_DEV` debug builds) |
 
 ## Flight plan
 
-Fly in three steps. Change only `ctrl_flight_mode` between flights.
+Fly in three steps. Between flights change `ctrl_flight_mode`; before CLOSED also set the roll
+gains (`ctrl_roll_kp`, `ctrl_roll_ki`) measured on the STEP flight.
 
 1. **SHADOW** (default): canards stay at trim; the whole loop runs and is logged. Checks the
    estimator, loop timing and the barometer error from the ogive ports.
@@ -167,7 +178,8 @@ Do these in order, with the board on the bench and the servo horns free.
    - Check the servos run from the Vega's 3.3 V signal and measure stall current at 8.4 V.
 3. **Layout change needs a reboot.** `set ctrl_layout = ROLL_2` prints the reboot note. Without a
    reboot SERVO1/2 keep the OFF behaviour and the event actions still drive them.
-4. **Sim, ROLL_2 + SHADOW.** Run `sim`. `flight_parse` shows CONTROL_INFO lines with state 3
+4. **Sim, ROLL_2 + SHADOW.** `sim` exists only in `CATS_DEV` builds (`pio run -e debug`); flash a
+   debug build for steps 4 and 5. Run `sim`. `flight_parse` shows CONTROL_INFO lines with state 3
    (NEUTRAL_LATCHED) and reason 9 (SIM). The servos never move.
 5. **Sim, layout OFF.** Repeat with `ctrl_layout = OFF` and save the `flight_parse` output. Diff it
    against the same sim on the pre-change firmware (build `main` at `60c5f61`). Only the config

@@ -10,7 +10,18 @@
 #include "cli/cli.hpp"
 #include "util/enum_str_maps.hpp"
 
+#include "control/canard/canard_types.hpp"
+
 #include <cstddef>
+
+/* The lookup tables in enum_str_maps.hpp are indexed by the canard enum values. */
+static_assert(static_cast<size_t>(canard::Layout::kOff) == 0 && static_cast<size_t>(canard::Layout::kRoll2) == 1 &&
+              static_cast<size_t>(canard::Layout::kFull4) == 2);
+static_assert(static_cast<size_t>(canard::FlightMode::kShadow) == 0 &&
+              static_cast<size_t>(canard::FlightMode::kStep) == 1 &&
+              static_cast<size_t>(canard::FlightMode::kClosed) == 2);
+static_assert(static_cast<size_t>(canard::StepAxis::kRoll) == 0 && static_cast<size_t>(canard::StepAxis::kT1) == 1 &&
+              static_cast<size_t>(canard::StepAxis::kT2) == 2);
 
 #undef LOOKUP_TABLE_ENTRY
 
@@ -116,6 +127,30 @@ const cli_value_t value_table[] = {
      VAR_UINT8 | MODE_LOOKUP,
      {.lookup = {TABLE_POWER}},
      offsetof(cats_config_t, telemetry_settings.adaptive_power)},
+
+    // Canard control
+    {"ctrl_layout", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_CTRL_LAYOUT}}, offsetof(cats_config_t, canard.layout)},
+    {"ctrl_flight_mode", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_CTRL_MODE}}, offsetof(cats_config_t, canard.flight_mode)},
+    {"ctrl_v_enable", VAR_UINT16, {.minmax_unsigned = {10, 100}}, offsetof(cats_config_t, canard.v_enable_mps)},
+    {"ctrl_v_ref", VAR_UINT16, {.minmax_unsigned = {20, 300}}, offsetof(cats_config_t, canard.v_ref_mps)},
+    {"ctrl_tilt_v_min", VAR_UINT16, {.minmax_unsigned = {20, 300}}, offsetof(cats_config_t, canard.tilt_v_min_mps)},
+    {"ctrl_max_defl", VAR_UINT8, {.minmax_unsigned = {0, 150}}, offsetof(cats_config_t, canard.max_defl_ddeg)},
+    {"ctrl_abort_tilt", VAR_UINT8, {.minmax_unsigned = {5, 60}}, offsetof(cats_config_t, canard.abort_tilt_deg)},
+    {"ctrl_roll_kp", VAR_UINT16, {.minmax_unsigned = {0, 65535}}, offsetof(cats_config_t, canard.roll_kp_milli)},
+    {"ctrl_roll_ki", VAR_UINT16, {.minmax_unsigned = {0, 65535}}, offsetof(cats_config_t, canard.roll_ki_milli)},
+    {"ctrl_tilt_kp", VAR_UINT16, {.minmax_unsigned = {0, 65535}}, offsetof(cats_config_t, canard.tilt_kp_milli)},
+    {"ctrl_tilt_kd", VAR_UINT16, {.minmax_unsigned = {0, 65535}}, offsetof(cats_config_t, canard.tilt_kd_milli)},
+    {"ctrl_step_axis", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_CTRL_AXIS}}, offsetof(cats_config_t, canard.step_axis)},
+    {"ctrl_step_defl", VAR_UINT8, {.minmax_unsigned = {0, 100}}, offsetof(cats_config_t, canard.step_defl_ddeg)},
+    {"ctrl_step_ms", VAR_UINT16, {.minmax_unsigned = {50, 2000}}, offsetof(cats_config_t, canard.step_ms)},
+    {"ctrl_step_delay_ms", VAR_UINT16, {.minmax_unsigned = {0, 10000}}, offsetof(cats_config_t, canard.step_delay_ms)},
+    {"ctrl_step_count", VAR_UINT8, {.minmax_unsigned = {1, 10}}, offsetof(cats_config_t, canard.step_count)},
+    {"ctrl_step_period_ms", VAR_UINT16, {.minmax_unsigned = {200, 10000}}, offsetof(cats_config_t, canard.step_period_ms)},
+    {"ctrl_us_per_deg", VAR_UINT16, {.minmax_unsigned = {10, 1000}}, offsetof(cats_config_t, canard.us_per_deg_deci)},
+    {"ctrl_center_us", VAR_UINT16, {.minmax_unsigned = {1000, 2000}}, offsetof(cats_config_t, canard.center_us)},
+    {"ctrl_servo_hz", VAR_UINT16, {.minmax_unsigned = {50, 333}}, offsetof(cats_config_t, canard.servo_hz)},
+    {"ctrl_trim", VAR_INT16 | MODE_ARRAY, {.array = {.length = 4}}, offsetof(cats_config_t, canard.trim_us)},
+    {"ctrl_reverse", VAR_UINT8 | MODE_ARRAY, {.array = {.length = 4}}, offsetof(cats_config_t, canard.reverse)},
 
     {"buzzer_volume", VAR_UINT8, {.minmax_unsigned = {0, 100}}, offsetof(cats_config_t, buzzer_volume)},
     {"battery_type", VAR_UINT8 | MODE_LOOKUP, {.lookup = {TABLE_BATTERY}}, offsetof(cats_config_t, battery_type)},

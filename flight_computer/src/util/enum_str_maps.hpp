@@ -48,6 +48,11 @@ inline constexpr std::array<const char *, 2> on_off_map{
 
 inline constexpr std::array<const char *, 3> battery_map{"LI-ION", "LI-PO", "ALKALINE"};
 
+/* Order must match canard::Layout, canard::FlightMode and canard::StepAxis (checked in cli/settings.cpp). */
+inline constexpr std::array<const char *, 3> ctrl_layout_map{"OFF", "ROLL_2", "FULL_4"};
+inline constexpr std::array<const char *, 3> ctrl_mode_map{"SHADOW", "STEP", "CLOSED"};
+inline constexpr std::array<const char *, 3> ctrl_axis_map{"ROLL", "T1", "T2"};
+
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern std::array<char *, NUM_REC_SPEEDS> recorder_speed_map;
 

@@ -10,7 +10,7 @@
 #include "util/types.hpp"
 
 /* The system will reload the default config when the number changes */
-constexpr uint32_t CONFIG_VERSION = 212U;
+constexpr uint32_t CONFIG_VERSION = 213U;
 
 /* Number of supported recording speeds */
 constexpr uint8_t NUM_REC_SPEEDS = 10;
@@ -30,6 +30,7 @@ struct cats_config_t {
 
   config_telemetry_t telemetry_settings{};
   control_settings_t control_settings{};
+  canard_config_t canard{};
   uint8_t buzzer_volume{0};
   battery_type_e battery_type{LI_ION};
   uint8_t rec_speed_idx{0};  // == inverse recording rate - 1

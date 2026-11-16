@@ -202,8 +202,25 @@ Exit conditions from `ACTIVE`, each latching and logged with its reason:
 
 Other envelope rules:
 - After landing, the servos keep holding neutral; PWM isn't stopped.
-- **Shadow mode:** `ctrl_max_defl = 0` runs the whole loop and logs it, but never moves the canards.
-  Intended for the first flight.
+
+**Flight modes** (`ctrl_flight_mode`, owner's choice (a), 2026-11-16). These run inside `ACTIVE`;
+all exit conditions apply in every mode.
+
+| Mode | What the canards do | Purpose |
+|---|---|---|
+| `SHADOW` (default) | stay at trim; the full loop runs and is logged | flight 1: estimator and timing check |
+| `STEP` | open-loop doublet (below), then `NEUTRAL_LATCHED` (reason "step done") | flight 2: measure real roll authority, sign and size, including canard–fin interaction |
+| `CLOSED` | controller output | flight 3 onward |
+
+`STEP` doublet:
+- **When:** it starts `ctrl_step_delay_ms` after the FSM enters COASTING. Coasting is when speed
+  changes slowly, so the response is readable.
+- **Shape:** the command on `ctrl_step_axis` (`ROLL`; `T1`/`T2` only in `FULL_4`) is
+  `+ctrl_step_defl` for `ctrl_step_ms`, then `−ctrl_step_defl` for `ctrl_step_ms`, then trim.
+- **Defaults:** axis `ROLL`, 2°, 300 ms, delay 200 ms.
+- **Extra exit:** |roll rate| > 360 °/s → neutral latch.
+- **Analysis:** the measured roll acceleration and q at the step give the roll effectiveness to feed
+  back into the simulation and gains.
 
 ### Who owns the outputs
 
@@ -224,7 +241,9 @@ board's saved config to defaults once.
 | `ctrl_layout` | `OFF` / `ROLL_2` / `FULL_4` | `OFF` |
 | `ctrl_v_enable` | m/s, activation and exit speed | 30 |
 | `ctrl_v_ref` | m/s, gain reference speed | 100 |
-| `ctrl_max_defl` | deg, command clamp (0 = shadow mode) | 8 |
+| `ctrl_max_defl` | deg, command clamp | 8 |
+| `ctrl_flight_mode` | `SHADOW` / `STEP` / `CLOSED` | `SHADOW` |
+| `ctrl_step_axis`, `ctrl_step_defl`, `ctrl_step_ms`, `ctrl_step_delay_ms` | step-test doublet | `ROLL`, 2°, 300 ms, 200 ms |
 | `ctrl_abort_tilt` | deg, latch-to-neutral tilt | 30 |
 | `ctrl_roll_kp`, `ctrl_roll_ki` | roll gains at `v_ref` | from simulation |
 | `ctrl_tilt_kp`, `ctrl_tilt_kd` | tilt gains at `v_ref` (`FULL_4`) | from simulation |
@@ -302,10 +321,10 @@ The builder chooses the fixed-point/scaling of each stored field.
   - `sweep` with the signs confirmed;
   - twist test (`live`): the canards oppose the hand rotation;
   - `FULL_4` tilt test: the canards push back towards vertical.
-- **Flight plan** (owner's call, suggested):
-  1. Flight 1: `ROLL_2` in shadow mode.
-  2. Flight 2: active with a small `ctrl_max_defl`.
-  3. Then normal limits.
+- **Flight plan** (owner chose the step-test path, 2026-11-16):
+  1. Flight 1: `ROLL_2`, `SHADOW`.
+  2. Flight 2: `ROLL_2`, `STEP` (roll doublet).
+  3. Flight 3: `ROLL_2`, `CLOSED`, with gains updated from flight 2.
 
 ## Left to the builder
 

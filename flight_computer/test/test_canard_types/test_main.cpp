@@ -43,9 +43,9 @@ void TypesDefaults_PlainDeclarationIsNeutral() {
   TEST_ASSERT_TRUE(p.layout == Layout::kOff);
   TEST_ASSERT_TRUE(p.mode == FlightMode::kShadow);
   TEST_ASSERT_EQUAL_FLOAT(0.0F, p.max_defl_deg);
-  TEST_ASSERT_EQUAL_FLOAT(0.0F, p.slew_dps);
+  TEST_ASSERT_EQUAL_FLOAT(300.0F, p.slew_dps);
   TEST_ASSERT_EQUAL_UINT8(0, p.step_count);
-  TEST_ASSERT_EQUAL_FLOAT(180.0F, p.authority_rate_dps);
+  TEST_ASSERT_EQUAL_FLOAT(90.0F, p.authority_rate_dps);
 }
 
 void TypesSize_LayoutIsOneByte() { TEST_ASSERT_EQUAL(1, sizeof(Layout)); }

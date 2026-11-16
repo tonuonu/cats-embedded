@@ -35,8 +35,8 @@ struct CanardParams {
   StepAxis step_axis = StepAxis::kRoll;
   float step_defl_deg = 0.0F, step_s = 0.0F, step_delay_s = 0.0F, step_period_s = 0.0F;
   uint8_t step_count = 0;
-  float authority_rate_dps = 180, authority_time_s = 0.5F, step_abort_rate_dps = 360, gyro_sat_dps = 1900;
-  float slew_dps = 0.0F;
+  float authority_rate_dps = 90, authority_time_s = 0.5F, step_abort_rate_dps = 360, gyro_sat_dps = 1900;
+  float slew_dps = 300.0F;
 };
 
 struct ControlInputs {

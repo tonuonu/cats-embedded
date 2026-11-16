@@ -515,11 +515,8 @@ void Sim_Roll_StableAcrossEffectiveness() {
 
 void Sim_Roll_ReversedTripsAuthority() {
   // The saturated reversed loop settles at 0.5 * Kc * 8 deg * V / D = 1.14 deg/s per m/s (114 deg/s at 100 m/s),
-  // below the default authority_rate_dps of 180 at every speed this vehicle reaches (see
-  // Sim_Roll_ReversedDefaultThresholdDoesNotTrip). The threshold is set to 90 deg/s here, ~20 % under that
-  // steady rate; the stimulus and the criterion are the brief's.
+  // ~20 % above the default authority_rate_dps of 90 (see Sim_Roll_Reversed_180DoesNotTrip for why not 180).
   Case c = RollCase(100.0, 200.0);
-  c.params.authority_rate_dps = 90.0F;
   c.eff = -0.5;
   c.disturbance_eq_deg = 0.0;
   c.duration_s = 3.0;
@@ -542,17 +539,18 @@ void Sim_Roll_ReversedTripsAuthority() {
   }
 }
 
-void Sim_Roll_ReversedDefaultThresholdDoesNotTrip() {
-  // Documents a limitation: with the default 180 deg/s the authority check cannot see a -0.5 reversal on this
-  // vehicle (steady 114 deg/s at 100 m/s, 157 deg/s at 138 m/s).
+void Sim_Roll_Reversed_180DoesNotTrip() {
+  // Why the default authority_rate_dps is 90: at the former 180 deg/s the authority check cannot see a -0.5
+  // reversal on this vehicle (steady 114 deg/s at 100 m/s, 157 deg/s at 138 m/s).
   for (const double v : {100.0, 138.0}) {
     Case c = RollCase(v, 200.0);
+    c.params.authority_rate_dps = 180.0F;
     c.eff = -0.5;
     c.disturbance_eq_deg = 0.0;
     c.duration_s = 3.0;
     const Trace tr = Run(c);
     const double steady = MaxAbsFrom(tr.t, tr.p_dps, 2.0);
-    std::printf("SIM Sim_Roll_ReversedDefaultThresholdDoesNotTrip v %.0f: steady %.1f deg/s\n", v, steady);
+    std::printf("SIM Sim_Roll_Reversed_180DoesNotTrip v %.0f: steady %.1f deg/s\n", v, steady);
     TEST_ASSERT_TRUE(steady > 90.0 && steady < 180.0);
     AssertStillActive(tr);
   }
@@ -590,6 +588,8 @@ void Sim_Full4_TiltAt70_NoGrowth() {
 }
 
 void Sim_StuckOutput_Stable() {
+  // Bounded roll: half the 360 deg/s STEP roll abort. AssertStillActive also shows no authority latch at 90 deg/s.
+  constexpr double kBoundedRollDps = 180.0;
   for (const Layout layout : {Layout::kFull4, Layout::kRoll2}) {
     Case c;
     c.params = SimParams(layout);
@@ -604,7 +604,7 @@ void Sim_StuckOutput_Stable() {
     std::printf("SIM Sim_StuckOutput_Stable %s: peak tilt %.2f deg, peak roll %.1f deg/s, last-1s roll %.1f\n",
                 layout == Layout::kFull4 ? "FULL_4" : "ROLL_2", tilt, roll, MaxAbsFrom(tr.t, tr.p_dps, 4.0));
     TEST_ASSERT_TRUE(tilt < c.params.abort_tilt_deg);
-    TEST_ASSERT_TRUE(roll < c.params.authority_rate_dps);
+    TEST_ASSERT_TRUE(roll < kBoundedRollDps);
     AssertNoGrowth(tr, tr.p_dps, roll, 0.5);
     AssertStillActive(tr);
   }
@@ -649,7 +649,7 @@ int main() {
   RUN_TEST(Sim_Roll_DampsAt100);
   RUN_TEST(Sim_Roll_StableAcrossEffectiveness);
   RUN_TEST(Sim_Roll_ReversedTripsAuthority);
-  RUN_TEST(Sim_Roll_ReversedDefaultThresholdDoesNotTrip);
+  RUN_TEST(Sim_Roll_Reversed_180DoesNotTrip);
   RUN_TEST(Sim_Full4_TiltAt100);
   RUN_TEST(Sim_Full4_TiltAt70_NoGrowth);
   RUN_TEST(Sim_StuckOutput_Stable);

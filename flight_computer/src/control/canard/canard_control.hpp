@@ -21,7 +21,8 @@ constexpr float kDefaultRollKi = 0.2F;
 /// Tilt: canard degrees per degree of tilt and per deg/s of transverse rate.
 constexpr float kDefaultTiltKp = 1.0F;
 constexpr float kDefaultTiltKd = 0.2F;
-/// Output slew limit in deg/s, used whenever CanardParams::slew_dps is not a positive finite number.
+/// Output slew limit in deg/s (the CanardParams::slew_dps default). Also used whenever slew_dps is not a positive
+/// finite number, which a configured value can still be.
 constexpr float kDefaultSlewDps = 300.0F;
 
 /// The canard control module behind one call per control step: body frame mapping, attitude, gain schedule,

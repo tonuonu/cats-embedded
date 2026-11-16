@@ -52,6 +52,10 @@ inline constexpr std::array<const char *, 3> battery_map{"LI-ION", "LI-PO", "ALK
 inline constexpr std::array<const char *, 3> ctrl_layout_map{"OFF", "ROLL_2", "FULL_4"};
 inline constexpr std::array<const char *, 3> ctrl_mode_map{"SHADOW", "STEP", "CLOSED"};
 inline constexpr std::array<const char *, 3> ctrl_axis_map{"ROLL", "T1", "T2"};
+/* Order must match canard::EnvState and canard::LatchReason (checked in cli/cli_commands.cpp). */
+inline constexpr std::array<const char *, 4> ctrl_state_map{"DISABLED", "NEUTRAL_PAD", "ACTIVE", "NEUTRAL_LATCHED"};
+inline constexpr std::array<const char *, 10> ctrl_reason_map{
+    "NONE", "DROGUE", "LOW_SPEED", "TILT", "GYRO_SAT", "IMU_FAULT", "AUTHORITY", "STEP_DONE", "STEP_ROLL_RATE", "SIM"};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern std::array<char *, NUM_REC_SPEEDS> recorder_speed_map;

@@ -31,8 +31,11 @@ Design background: `docs/superpowers/specs/2026-11-16-canard-control-design.md`.
 | `FULL_4` | 4 | SERVO1, SERVO2, plus outputs 3 and 4 on the UART2 pins PA2 (TX) and PA3 (RX). UART2 is then not available as a serial port. |
 
 A layout other than `OFF` claims its outputs: event actions `ACT_SERVO_ONE`/`ACT_SERVO_TWO` on a
-claimed output are ignored. The CLI warns about such actions after `set ev_...` or
-`set ctrl_layout`, and the boot log warns about them once; the actions are kept, not refused.
+claimed output are ignored. The actions are kept, not refused; the CLI warns about them:
+- after `set ev_X` (event X only, against the layout configured for the next boot; the running
+  layout is named when it differs) and after `set ctrl_layout` (all events, new layout);
+- for the running layout when the CLI starts and in `ctrl_test status`. Debug (`CATS_DEV`) builds
+  also log them at boot; release builds do not, because `log_warn` compiles out.
 
 ## Settings
 
@@ -56,7 +59,7 @@ prints a reminder after each `set ctrl_...`.
 | `ctrl_roll_ki` | 0 to 65535 | 200 | x1000 (200 = 0.2). Roll integral gain |
 | `ctrl_tilt_kp` | 0 to 65535 | 0 | x1000. Tilt proportional gain. Must stay 0 until the stage-2 sim |
 | `ctrl_tilt_kd` | 0 to 65535 | 0 | x1000. Tilt derivative gain. Must stay 0 until the stage-2 sim |
-| `ctrl_step_axis` | ROLL, T1, T2 | ROLL | STEP axis. T1/T2 only with FULL_4: with ROLL_2 they move no canard (the CLI and the boot log warn) |
+| `ctrl_step_axis` | ROLL, T1, T2 | ROLL | STEP axis. T1/T2 only with FULL_4: with ROLL_2 they move no canard (warned after `set`, when the CLI starts and in `ctrl_test status`) |
 | `ctrl_step_defl` | 0 to 100 | 30 | 0.1 deg, so 30 = 3.0 deg. Doublet amplitude |
 | `ctrl_step_ms` | 50 to 2000 | 300 | ms per side of a doublet |
 | `ctrl_step_delay_ms` | 0 to 10000 | 300 | ms from entering COASTING to the first doublet |
@@ -105,6 +108,8 @@ latch depends on the state:
 
 - NEUTRAL_PAD: only SIM and IMU_FAULT (a non-finite input) latch. The other conditions are not
   checked on the pad; an IMU fault flag or a failed frame check latches IMU_FAULT at activation.
+  A failed frame check is already visible on the pad: CONTROL_INFO then logs state NEUTRAL_PAD with
+  reason IMU_FAULT (the envelope itself has not latched), and `ctrl_test status` reads FAIL.
 - ACTIVE: every condition below is an exit from ACTIVE (see Flight plan for which apply per mode).
 
 | Reason | Value | Cause |
@@ -154,7 +159,7 @@ layout latched at boot is not OFF, and added to the default record mask. `flight
 | tilt1, tilt2 | 0.01 deg |
 | d0 to d3 | 0.1 deg. Commanded (would-be, in SHADOW) deflection per output, +-12.7 deg |
 | state | number, see Envelope |
-| reason | number, see Reason table |
+| reason | number, see Reason table. In NEUTRAL_PAD, IMU_FAULT means the frame check fails (it latches at activation) |
 
 Log budget: with a layout on, the pre-liftoff history shrinks from about 768 ms to about 640 ms and
 flash writes rise about 20 percent. With layout OFF nothing changes.
@@ -197,5 +202,16 @@ Do these in order, with the board on the bench and the servo horns free.
    default 20, capped at 120). ROLL_2:
    twisting the rocket by hand makes the canards oppose the rotation. FULL_4: the same for roll;
    with the default tilt gains of 0, tilting does not move them.
-10. **Safety returns.** A test ends on its timeout, on `ctrl_test stop`, or on any FSM change; the
-    canards then return to trim. Unplugging USB does not end it.
+10. **Safety returns.** A test ends on its timeout, on `ctrl_test stop` (prints `ctrl_test: stopped`,
+    or `ctrl_test: no test running`), or on any FSM change; the canards then return to trim.
+    Unplugging USB does not end it.
+11. **Status.** `ctrl_test status` prints the boot layout and mode, whether control has started, the
+    envelope state and reason, the frame check (OK/FAIL with the filtered body-axis specific force
+    in g), whether a test runs, each claimed output (ok/MISSING) and the warnings above.
+
+## Pre-flight check
+
+On the rail, after the board reached READY (about 10 s still), connect USB and run
+`ctrl_test status`. **The frame check must read OK on the rail before arming.** FAIL (body z about
+-1 g) means the long-axis sign is wrong: control would latch IMU_FAULT at liftoff. Also check that
+every output reads ok and that no warning is printed.

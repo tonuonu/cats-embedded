@@ -109,3 +109,8 @@ extern const cli_value_t value_table[];
 void *get_cats_config_member_ptr(const cats_config_t *cfg, const cli_value_t *var);
 
 void print_cats_config(const char *cmd_name, const cats_config_t *cfg, bool print_limits);
+
+/* Canard warnings for the running (boot) layout: event servo actions it ignores and a STEP axis it cannot move. The
+ * firmware's boot log only shows them in CATS_DEV builds; the CLI prints them when it starts and in ctrl_test status.
+ */
+void cli_print_canard_boot_warnings();

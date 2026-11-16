@@ -38,47 +38,71 @@ static void ctrl_reboot_note(const cli_value_t *var) {
   cli_printf("%s takes effect after save + reboot", var->name);
 }
 
-/* Warns about event servo actions on outputs that layout claims: they are ignored at runtime (warn only). */
-static void warn_claimed_servo_actions(uint8_t layout) {
-  const uint16_t events = canard_claimed_servo_events(layout);
+/* One line per event in `events` (bit e = cats_event_e e) whose servo action layout ignores; when is "" for the
+ * running layout or " after reboot" for the configured one. Warn only: the actions are kept. */
+static void warn_claimed_servo_actions(uint16_t events, uint8_t layout, const char *when) {
   for (uint8_t e = 0U; e < NUM_EVENTS; ++e) {
     if ((events & (1U << e)) != 0U) {
       cli_print_linefeed();
       cli_printf(
-          "warning: event %s has a SERVO_ONE/SERVO_TWO action; ctrl_layout %s owns SERVO1/SERVO2, so it is ignored",
-          event_map[e], ctrl_layout_map[layout]);
+          "warning: event %s has a SERVO_ONE/SERVO_TWO action; ctrl_layout %s owns SERVO1/SERVO2%s, so it is "
+          "ignored",
+          event_map[e], ctrl_layout_map[layout], when);
     }
   }
 }
 
-/* set ev_*: checked against the layout running now and the one configured for the next boot. */
-static void ev_servo_check(const cli_value_t * /*var*/) {
-  const uint8_t configured = global_cats_config.canard.layout;
-  warn_claimed_servo_actions(canard_layout_claims(canard_boot_layout(), 0U) ? canard_boot_layout() : configured);
+/* ROLL_2 mixes roll only: a STEP doublet on T1/T2 would move no canard (warn only, the setting is kept). */
+static void warn_step_axis(const canard_config_t &cfg, const char *when) {
+  if (canard_step_axis_moves_nothing(cfg)) {
+    cli_print_linefeed();
+    cli_printf("warning: ctrl_step_axis %s with ctrl_layout ROLL_2 (roll only)%s: STEP doublets move no canard",
+               ctrl_axis_map[cfg.step_axis], when);
+  }
 }
 
-/* ROLL_2 mixes roll only: a STEP doublet on T1/T2 would move no canard (warn only, the setting is kept). */
-static void warn_step_axis_without_tilt() {
-  const canard_config_t &cfg = global_cats_config.canard;
-  if (cfg.layout == static_cast<uint8_t>(canard::Layout::kRoll2) &&
-      cfg.step_axis != static_cast<uint8_t>(canard::StepAxis::kRoll) && cfg.step_axis < ctrl_axis_map.size()) {
+void cli_print_canard_boot_warnings() {
+  const uint8_t layout = canard_boot_layout();
+  warn_claimed_servo_actions(canard_claimed_servo_events(layout), layout, "");
+  warn_step_axis(canard_boot_config(), "");
+}
+
+/* set ev_X: event X only, against the layout configured for the next boot; the running layout is mentioned when it
+ * differs. */
+static void ev_servo_check(const cli_value_t *var) {
+  const size_t first = offsetof(cats_config_t, action_array);
+  const size_t index = (var->member_offset - first) / sizeof(global_cats_config.action_array[0]);
+  if (index >= NUM_EVENTS) {
+    return;
+  }
+  const auto bit = static_cast<uint16_t>(1U << index);
+  const uint8_t configured = global_cats_config.canard.layout;
+  const uint8_t running = canard_boot_layout();
+  if ((canard_claimed_servo_events(configured) & bit) != 0U) {
+    warn_claimed_servo_actions(bit, configured, " after reboot");
+    if (running != configured) {
+      cli_print_linefeed();
+      cli_printf("(running now: ctrl_layout %s)", ctrl_layout_map[running]);
+    }
+  } else if ((canard_claimed_servo_events(running) & bit) != 0U) {
     cli_print_linefeed();
-    cli_printf("warning: ctrl_step_axis %s with ctrl_layout ROLL_2 (roll only): STEP doublets move no canard",
-               ctrl_axis_map[cfg.step_axis]);
+    cli_printf("note: event %s servo action is ignored until reboot: the running ctrl_layout %s owns SERVO1/SERVO2",
+               event_map[index], ctrl_layout_map[running]);
   }
 }
 
 /* set ctrl_layout: reboot note, then the event servo actions the new layout would claim and the STEP axis. */
 static void ctrl_layout_cb(const cli_value_t *var) {
   ctrl_reboot_note(var);
-  warn_claimed_servo_actions(global_cats_config.canard.layout);
-  warn_step_axis_without_tilt();
+  const uint8_t configured = global_cats_config.canard.layout;
+  warn_claimed_servo_actions(canard_claimed_servo_events(configured), configured, " after reboot");
+  warn_step_axis(global_cats_config.canard, " after reboot");
 }
 
 /* set ctrl_step_axis: reboot note and the STEP axis check. */
 static void ctrl_step_axis_cb(const cli_value_t *var) {
   ctrl_reboot_note(var);
-  warn_step_axis_without_tilt();
+  warn_step_axis(global_cats_config.canard, " after reboot");
 }
 
 const cli_value_t value_table[] = {

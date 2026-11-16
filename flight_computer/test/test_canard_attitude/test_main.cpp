@@ -49,6 +49,45 @@ void Frame_AllAxesAndSigns_RightHanded() {
   }
 }
 
+void Frame_AllAxesAndSigns_ExplicitMapping() {
+  // board (1, 2, 3) -> body (t1, t2, roll), written out for every (long_axis, long_sign):
+  // body = (board[(a+1)%3], s * board[(a+2)%3], s * board[a]).
+  struct Row {
+    uint8_t a;
+    float s;
+    float body[3];
+  };
+  const Row rows[] = {
+      {0, 1.0F, {2.0F, 3.0F, 1.0F}},   {0, -1.0F, {2.0F, -3.0F, -1.0F}},
+      {1, 1.0F, {3.0F, 1.0F, 2.0F}},   {1, -1.0F, {3.0F, -1.0F, -2.0F}},
+      {2, 1.0F, {1.0F, 2.0F, 3.0F}},   {2, -1.0F, {1.0F, -2.0F, -3.0F}},
+  };
+  const float board[3] = {1.0F, 2.0F, 3.0F};
+  for (const Row& r : rows) {
+    float body[3] = {0.0F, 0.0F, 0.0F};
+    BoardToBody(board, r.a, r.s, body);
+    TEST_ASSERT_EQUAL_FLOAT_ARRAY(r.body, body, 3);
+  }
+  // The examples the review asked for, on unit vectors: a=2, s=-1 maps (ex, ey, ez) to (ex, -ey, -ez); a=2, s=+1
+  // is the identity.
+  const float ex[3] = {1.0F, 0.0F, 0.0F};
+  const float ey[3] = {0.0F, 1.0F, 0.0F};
+  const float ez[3] = {0.0F, 0.0F, 1.0F};
+  const float neg_ey[3] = {0.0F, -1.0F, 0.0F};
+  const float neg_ez[3] = {0.0F, 0.0F, -1.0F};
+  float out[3] = {0.0F, 0.0F, 0.0F};
+  BoardToBody(ex, 2, -1.0F, out);
+  TEST_ASSERT_EQUAL_FLOAT_ARRAY(ex, out, 3);
+  BoardToBody(ey, 2, -1.0F, out);
+  TEST_ASSERT_EQUAL_FLOAT_ARRAY(neg_ey, out, 3);
+  BoardToBody(ez, 2, -1.0F, out);
+  TEST_ASSERT_EQUAL_FLOAT_ARRAY(neg_ez, out, 3);
+  for (const float* e : {ex, ey, ez}) {
+    BoardToBody(e, 2, 1.0F, out);
+    TEST_ASSERT_EQUAL_FLOAT_ARRAY(e, out, 3);
+  }
+}
+
 void Attitude_PadLevel_ConvergesToRailTilt() {
   ControlAttitude att;
   att.Reset();
@@ -108,6 +147,36 @@ void Attitude_Flight_IntegratesTilt() {
   TEST_ASSERT_EQUAL_FLOAT(10.0F, rates[1]);
 }
 
+void Attitude_Flight_IntegratesTilt_T2Sign() {
+  // d(tilt_t2)/dt = -w_t1: +10 deg/s about t1 for 0.5 s leans the nose 5 deg toward -t2.
+  ControlAttitude att;
+  att.Reset();
+  const float gyro[3] = {10.0F, 0.0F, 0.0F};
+  for (int i = 0; i < 50; ++i) {
+    att.UpdateFlight(gyro, 0.01F);
+  }
+  float tilt[2] = {0.0F, 0.0F};
+  att.TiltDeg(tilt);
+  TEST_ASSERT_FLOAT_WITHIN(0.05F, 0.0F, tilt[0]);
+  TEST_ASSERT_FLOAT_WITHIN(0.05F, -5.0F, tilt[1]);
+}
+
+void Attitude_PadLevel_T2Sign() {
+  // Specific force with a +t2 component (up leans toward +t2) reads as a negative tilt_t2, like t1.
+  ControlAttitude att;
+  att.Reset();
+  const float gyro[3] = {0.0F, 0.0F, 0.0F};
+  const float acc[3] = {0.0F, kG * std::sin(5.0F * kDegToRad), kG * std::cos(5.0F * kDegToRad)};
+  for (int i = 0; i < 2000; ++i) {
+    att.UpdatePad(gyro, acc, 0.01F);
+  }
+  float tilt[2] = {0.0F, 0.0F};
+  att.TiltDeg(tilt);
+  TEST_ASSERT_TRUE(tilt[1] < 0.0F);
+  TEST_ASSERT_FLOAT_WITHIN(0.2F, -5.0F, tilt[1]);
+  TEST_ASSERT_FLOAT_WITHIN(0.2F, 0.0F, tilt[0]);
+}
+
 void Attitude_PadSkipsLevellingUnderAccel() {
   ControlAttitude att;
   att.Reset();
@@ -125,10 +194,13 @@ void Attitude_PadSkipsLevellingUnderAccel() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(Frame_AllAxesAndSigns_RightHanded);
+  RUN_TEST(Frame_AllAxesAndSigns_ExplicitMapping);
   RUN_TEST(Attitude_PadLevel_ConvergesToRailTilt);
   RUN_TEST(Attitude_PadBias_Learned);
   RUN_TEST(Attitude_Flight_IntegratesRoll);
   RUN_TEST(Attitude_Flight_IntegratesTilt);
+  RUN_TEST(Attitude_Flight_IntegratesTilt_T2Sign);
+  RUN_TEST(Attitude_PadLevel_T2Sign);
   RUN_TEST(Attitude_PadSkipsLevellingUnderAccel);
   return UNITY_END();
 }
